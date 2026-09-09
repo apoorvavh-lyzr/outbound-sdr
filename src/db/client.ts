@@ -17,6 +17,37 @@ export interface Database {
   close(): Promise<void>;
 }
 
+/**
+ * Decides whether a Postgres connection should use TLS.
+ *
+ * Railway wires services together over a private network, and its Postgres
+ * does NOT offer SSL on the internal hostname - asking for it there fails with
+ * "The server does not support SSL connections". Its PUBLIC proxy hostname does
+ * use TLS, but with a certificate that will not verify against a public CA, so
+ * verification is relaxed rather than skipping encryption entirely.
+ */
+export function resolvePostgresSsl(connectionString: string): false | { rejectUnauthorized: boolean } {
+  // An explicit sslmode in the URL always wins.
+  if (/\bsslmode=disable\b/.test(connectionString)) return false;
+  if (/\bsslmode=(require|prefer|verify-ca|verify-full)\b/.test(connectionString)) {
+    return { rejectUnauthorized: /\bsslmode=verify-full\b/.test(connectionString) };
+  }
+
+  let host = "";
+  try {
+    host = new URL(connectionString).hostname;
+  } catch {
+    host = connectionString;
+  }
+
+  // Local development and private service-to-service networks: no TLS offered.
+  const isLocal = host === "localhost" || host === "127.0.0.1" || host === "::1";
+  const isPrivate = host.endsWith(".internal") || host.endsWith(".local");
+  if (isLocal || isPrivate) return false;
+
+  return { rejectUnauthorized: false };
+}
+
 /** Rewrites `?` placeholders into `$1, $2, ...` for pg. */
 function toPositional(sql: string): string {
   let index = 0;
@@ -37,12 +68,7 @@ class PostgresDatabase implements Database {
         max: 10,
         connectionTimeoutMillis: 10_000,
         idleTimeoutMillis: 30_000,
-        // Railway's internal Postgres uses a self-signed certificate.
-        ssl: /\bsslmode=disable\b/.test(this.connectionString)
-          ? false
-          : this.connectionString.includes("localhost") || this.connectionString.includes("127.0.0.1")
-            ? false
-            : { rejectUnauthorized: false },
+        ssl: resolvePostgresSsl(this.connectionString),
       });
     }
     return this.pool;

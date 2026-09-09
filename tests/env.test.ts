@@ -51,6 +51,14 @@ describe("env validation", () => {
     }
   });
 
+  it("rejects a PUBLIC_BASE_URL with no hostname", () => {
+    // What https://${{RAILWAY_PUBLIC_DOMAIN}} expands to before a domain
+    // exists. It passes a naive https:// prefix check but is unusable.
+    expect(() =>
+      parseEnv({ ...productionBase, PUBLIC_BASE_URL: "https://" } as NodeJS.ProcessEnv),
+    ).toThrow(/no hostname|Generate Domain/);
+  });
+
   it("rejects a non-https PUBLIC_BASE_URL in production", () => {
     expect(() =>
       parseEnv({ ...productionBase, PUBLIC_BASE_URL: "http://voice.example.com" } as NodeJS.ProcessEnv),

@@ -76,12 +76,30 @@ export const envSchema = z
 
     if (env.NODE_ENV === "production") {
       need("DATABASE_URL", env.DATABASE_URL);
-      if (env.PUBLIC_BASE_URL && !env.PUBLIC_BASE_URL.startsWith("https://")) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ["PUBLIC_BASE_URL"],
-          message: "PUBLIC_BASE_URL must start with https:// so the Twilio Stream URL is wss://",
-        });
+
+      if (env.PUBLIC_BASE_URL) {
+        const fail = (message: string) =>
+          ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["PUBLIC_BASE_URL"], message });
+
+        if (!env.PUBLIC_BASE_URL.startsWith("https://")) {
+          fail("PUBLIC_BASE_URL must start with https:// so the Twilio Stream URL is wss://");
+        } else {
+          // Catches "https://" with nothing after it, which is what
+          // https://${{RAILWAY_PUBLIC_DOMAIN}} expands to before a domain has
+          // been generated. Twilio would then be handed "wss:///twilio-media".
+          let hostname = "";
+          try {
+            hostname = new URL(env.PUBLIC_BASE_URL).hostname;
+          } catch {
+            hostname = "";
+          }
+          if (!hostname) {
+            fail(
+              "PUBLIC_BASE_URL has no hostname. If you used ${{RAILWAY_PUBLIC_DOMAIN}}, " +
+                "generate a public domain first (Settings -> Networking -> Generate Domain).",
+            );
+          }
+        }
       }
     }
 
