@@ -46,6 +46,16 @@ export interface BridgeStats {
   peakToAgent: number;
   peakAgentIn: number;
   peakToTwilio: number;
+  /**
+   * Mean RMS amplitude at each stage.
+   *
+   * Peak alone cannot separate one loud transient from a permanently railed
+   * signal. Normal speech sits far below its own peak; an RMS close to the peak
+   * means the audio is saturated, which usually points at a decode error rather
+   * than a loud talker.
+   */
+  rmsCallerIn: number;
+  rmsAgentIn: number;
 }
 
 /**
@@ -90,6 +100,8 @@ export class AudioBridge {
     peakToAgent: 0,
     peakAgentIn: 0,
     peakToTwilio: 0,
+    rmsCallerIn: 0,
+    rmsAgentIn: 0,
   };
 
   /** Highest absolute sample in a PCM16 LE buffer. */
@@ -101,6 +113,24 @@ export class AudioBridge {
     }
     return max;
   }
+
+  /** Root-mean-square amplitude of a PCM16 LE buffer. */
+  private static rms(pcm: Buffer): number {
+    const n = pcm.length >> 1;
+    if (n === 0) return 0;
+    let sum = 0;
+    for (let i = 0; i < n; i++) {
+      const v = pcm.readInt16LE(i * 2);
+      sum += v * v;
+    }
+    return Math.round(Math.sqrt(sum / n));
+  }
+
+  /** Running mean, so a single frame cannot dominate the reported level. */
+  private rmsCallerAccum = 0;
+  private rmsCallerCount = 0;
+  private rmsAgentAccum = 0;
+  private rmsAgentCount = 0;
 
   constructor(private readonly options: AudioBridgeOptions) {
     this.toAgent = createResampler(TWILIO_SAMPLE_RATE, options.captureSampleRate);
@@ -137,6 +167,9 @@ export class AudioBridge {
     if (mulaw.length === 0) return;
     const pcm8k = decodeMuLaw(mulaw);
     this.stats.peakCallerIn = Math.max(this.stats.peakCallerIn, AudioBridge.peak(pcm8k));
+    this.rmsCallerAccum += AudioBridge.rms(pcm8k);
+    this.rmsCallerCount++;
+    this.stats.rmsCallerIn = Math.round(this.rmsCallerAccum / this.rmsCallerCount);
 
     if (!this.agentReady) {
       this.bufferPreconnect(pcm8k);
@@ -185,6 +218,9 @@ export class AudioBridge {
     this.stats.agentFramesIn++;
 
     this.stats.peakAgentIn = Math.max(this.stats.peakAgentIn, AudioBridge.peak(pcm));
+    this.rmsAgentAccum += AudioBridge.rms(pcm);
+    this.rmsAgentCount++;
+    this.stats.rmsAgentIn = Math.round(this.rmsAgentAccum / this.rmsAgentCount);
 
     if (!this.stats.agentSampleRates.includes(sampleRate)) {
       this.stats.agentSampleRates.push(sampleRate);
