@@ -16,6 +16,14 @@ FROM node:22-slim AS runtime
 ENV NODE_ENV=production
 WORKDIR /app
 
+# @livekit/rtc-node is a Rust native binding that reads the SYSTEM trust store
+# rather than Node's bundled one. The slim image ships without it, so joining a
+# LiveKit room fails with "no native root CA certificates found" the moment a
+# call is answered - long after the build looks healthy.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
 COPY package*.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 
