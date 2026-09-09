@@ -49,6 +49,17 @@ export class LiveKitRoomBridge {
   private pending = Buffer.alloc(0);
   private readonly frameSamples: number;
 
+  /**
+   * Frames waiting to be handed to LiveKit, plus the single pump draining them.
+   *
+   * captureFrame() applies BACKPRESSURE: it resolves only once the source has
+   * room, so it must be awaited one frame at a time. Firing a burst
+   * concurrently - which is exactly what flushing the pre-connect buffer does -
+   * overruns the queue and fails with "InvalidState - failed to capture frame".
+   */
+  private frameQueue: AudioFrame[] = [];
+  private pumping = false;
+
   constructor(
     private readonly session: LiveKitSession,
     private readonly callbacks: RoomBridgeCallbacks,
@@ -89,7 +100,8 @@ export class LiveKitRoomBridge {
     );
 
     // Publish the prospect's audio as a microphone track.
-    const source = new AudioSource(this.captureSampleRate, 1);
+    // A 1s internal queue absorbs jitter between Twilio's cadence and LiveKit's.
+    const source = new AudioSource(this.captureSampleRate, 1, 1000);
     this.source = source;
 
     const track = LocalAudioTrack.createAudioTrack("prospect", source);
@@ -184,17 +196,46 @@ export class LiveKitRoomBridge {
       const samples = new Int16Array(this.frameSamples);
       for (let i = 0; i < this.frameSamples; i++) samples[i] = slice.readInt16LE(i * 2);
 
-      const frame = new AudioFrame(samples, this.captureSampleRate, 1, this.frameSamples);
-      // captureFrame is async; a rejection must not become an unhandled
-      // rejection and kill the process mid-call.
-      void this.source.captureFrame(frame).catch((err) => {
-        if (!this.closed) this.callbacks.onError(err);
-      });
-
+      this.enqueue(new AudioFrame(samples, this.captureSampleRate, 1, this.frameSamples));
       offset += frameBytes;
     }
 
     this.pending = Buffer.from(combined.subarray(offset));
+  }
+
+  /**
+   * Queues a frame and starts the pump.
+   *
+   * The backlog is bounded at ~2s: if we ever get further behind than that the
+   * audio is stale anyway, so the OLDEST frames are dropped rather than growing
+   * unboundedly or stalling the bridge.
+   */
+  private enqueue(frame: AudioFrame): void {
+    const maxFrames = Math.ceil(2000 / CAPTURE_FRAME_MS);
+
+    this.frameQueue.push(frame);
+    while (this.frameQueue.length > maxFrames) this.frameQueue.shift();
+
+    if (!this.pumping) void this.pump();
+  }
+
+  /** Drains the queue one frame at a time, respecting captureFrame's pacing. */
+  private async pump(): Promise<void> {
+    if (this.pumping) return;
+    this.pumping = true;
+
+    try {
+      while (!this.closed && this.frameQueue.length > 0) {
+        const frame = this.frameQueue.shift();
+        if (!frame || !this.source) break;
+        await this.source.captureFrame(frame);
+      }
+    } catch (err) {
+      // A capture failure after teardown is expected; anything else is real.
+      if (!this.closed) this.callbacks.onError(err);
+    } finally {
+      this.pumping = false;
+    }
   }
 
   /** Tears down the room, track and source exactly once. */
@@ -202,6 +243,7 @@ export class LiveKitRoomBridge {
     if (this.closed) return;
     this.closed = true;
     this.pending = Buffer.alloc(0);
+    this.frameQueue = [];
 
     try {
       await this.streamReader?.cancel().catch(() => undefined);
