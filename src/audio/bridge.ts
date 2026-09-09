@@ -35,6 +35,17 @@ export interface BridgeStats {
   clears: number;
   /** Distinct sample rates observed on inbound agent audio. */
   agentSampleRates: number[];
+  /**
+   * Peak absolute PCM16 amplitude seen at each stage (0-32767).
+   *
+   * Frame counts alone cannot distinguish "audio flowing" from "silence
+   * flowing": a muted call moves exactly as many bytes as a loud one. These
+   * pinpoint which leg of the bridge lost the signal.
+   */
+  peakCallerIn: number;
+  peakToAgent: number;
+  peakAgentIn: number;
+  peakToTwilio: number;
 }
 
 /**
@@ -75,7 +86,21 @@ export class AudioBridge {
     droppedFrames: 0,
     clears: 0,
     agentSampleRates: [],
+    peakCallerIn: 0,
+    peakToAgent: 0,
+    peakAgentIn: 0,
+    peakToTwilio: 0,
   };
+
+  /** Highest absolute sample in a PCM16 LE buffer. */
+  private static peak(pcm: Buffer): number {
+    let max = 0;
+    for (let i = 0; i + 1 < pcm.length; i += 2) {
+      const v = Math.abs(pcm.readInt16LE(i));
+      if (v > max) max = v;
+    }
+    return max;
+  }
 
   constructor(private readonly options: AudioBridgeOptions) {
     this.toAgent = createResampler(TWILIO_SAMPLE_RATE, options.captureSampleRate);
@@ -111,6 +136,7 @@ export class AudioBridge {
     const mulaw = Buffer.from(base64Payload, "base64");
     if (mulaw.length === 0) return;
     const pcm8k = decodeMuLaw(mulaw);
+    this.stats.peakCallerIn = Math.max(this.stats.peakCallerIn, AudioBridge.peak(pcm8k));
 
     if (!this.agentReady) {
       this.bufferPreconnect(pcm8k);
@@ -145,6 +171,7 @@ export class AudioBridge {
     const resampled = this.toAgent.process(pcm8k);
     if (resampled.length === 0) return;
 
+    this.stats.peakToAgent = Math.max(this.stats.peakToAgent, AudioBridge.peak(resampled));
     this.options.transport.sendToAgent(resampled);
     this.stats.agentFramesOut++;
   }
@@ -156,6 +183,8 @@ export class AudioBridge {
   handleAgentAudio(pcm: Buffer, sampleRate: number): void {
     if (this.closed || pcm.length === 0) return;
     this.stats.agentFramesIn++;
+
+    this.stats.peakAgentIn = Math.max(this.stats.peakAgentIn, AudioBridge.peak(pcm));
 
     if (!this.stats.agentSampleRates.includes(sampleRate)) {
       this.stats.agentSampleRates.push(sampleRate);
@@ -170,6 +199,8 @@ export class AudioBridge {
 
     const pcm8k = this.toTwilio.process(pcm);
     if (pcm8k.length === 0) return;
+
+    this.stats.peakToTwilio = Math.max(this.stats.peakToTwilio, AudioBridge.peak(pcm8k));
 
     const mulaw = encodeMuLaw(pcm8k);
     const combined =
