@@ -32,6 +32,7 @@ export interface AgentConnection {
 class MediaSession {
   private bridge: AudioBridge | undefined;
   private agent: AgentConnection | undefined;
+  private room: LiveKitRoomBridge | undefined;
   private sessionId: string | undefined;
   private closing = false;
   private callId: string | undefined;
@@ -193,7 +194,11 @@ class MediaSession {
         onError: (err) => this.fail(err),
       },
       this.log,
+      CAPTURE_SAMPLE_RATE,
+      // Never in production: this retains raw call audio.
+      this.deps.env.NODE_ENV !== "production" && Boolean(this.deps.env.DEBUG_AUDIO_DIR),
     );
+    this.room = room;
 
     this.agent = {
       capture: (pcm) => room.capture(pcm),
@@ -216,8 +221,31 @@ class MediaSession {
     if (this.closing) return;
     this.closing = true;
 
+    // Report the whole return path in one line: what the agent track actually
+    // delivered, and what we actually put on the wire to Twilio.
+    if (this.room) {
+      const remote = this.room.getRemoteStats();
+      const out = this.bridge?.getStats();
+      this.log.info(
+        {
+          event: "return_path_stats",
+          ...remote,
+          mulaw_frames_encoded: out?.mulaw_frames_encoded ?? 0,
+          twilio_media_messages_sent: out?.twilio_media_messages_sent ?? 0,
+          twilio_media_bytes_sent: out?.twilio_media_bytes_sent ?? 0,
+        },
+        "return path summary",
+      );
+
+      const dir = this.deps.env.DEBUG_AUDIO_DIR;
+      if (dir && this.deps.env.NODE_ENV !== "production" && this.callId) {
+        await this.room.writeDebugWav(dir, this.callId).catch(() => undefined);
+      }
+    }
+
     this.bridge?.close();
     this.bridge = undefined;
+    this.room = undefined;
 
     await this.agent?.close(reason).catch(() => undefined);
     this.agent = undefined;

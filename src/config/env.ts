@@ -54,6 +54,13 @@ export const envSchema = z
     MOCK_EXTERNAL_SERVICES: bool.optional().default(false),
     CLONED_AGENT_RETENTION_HOURS: int(72, 0),
     ENABLE_DNC_CHECK: bool.optional().default(false),
+
+    /**
+     * Directory for one debug WAV of the agent's audio per call, captured
+     * BEFORE mu-law conversion. Development only - refused in production,
+     * where retaining call audio is a privacy and memory problem.
+     */
+    DEBUG_AUDIO_DIR: optionalStr,
   })
   .superRefine((env, ctx) => {
     const requireLive = env.NODE_ENV === "production" || !env.MOCK_EXTERNAL_SERVICES;
@@ -75,6 +82,14 @@ export const envSchema = z
       need("TWILIO_AUTH_TOKEN", env.TWILIO_AUTH_TOKEN);
       need("TWILIO_PHONE_NUMBER", env.TWILIO_PHONE_NUMBER);
       need("SUPERFLOW_SHARED_SECRET", env.SUPERFLOW_SHARED_SECRET);
+    }
+
+    if (env.NODE_ENV === "production" && env.DEBUG_AUDIO_DIR) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["DEBUG_AUDIO_DIR"],
+        message: "DEBUG_AUDIO_DIR records call audio and must not be set in production",
+      });
     }
 
     if (env.NODE_ENV === "production") {

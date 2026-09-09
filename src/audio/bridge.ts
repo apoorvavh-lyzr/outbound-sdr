@@ -56,6 +56,11 @@ export interface BridgeStats {
    */
   rmsCallerIn: number;
   rmsAgentIn: number;
+
+  /** Return-path counters: agent audio -> mu-law -> Twilio. */
+  mulaw_frames_encoded: number;
+  twilio_media_messages_sent: number;
+  twilio_media_bytes_sent: number;
 }
 
 /**
@@ -102,6 +107,9 @@ export class AudioBridge {
     peakToTwilio: 0,
     rmsCallerIn: 0,
     rmsAgentIn: 0,
+    mulaw_frames_encoded: 0,
+    twilio_media_messages_sent: 0,
+    twilio_media_bytes_sent: 0,
   };
 
   /** Highest absolute sample in a PCM16 LE buffer. */
@@ -239,6 +247,7 @@ export class AudioBridge {
     this.stats.peakToTwilio = Math.max(this.stats.peakToTwilio, AudioBridge.peak(pcm8k));
 
     const mulaw = encodeMuLaw(pcm8k);
+    this.stats.mulaw_frames_encoded++;
     const combined =
       this.outboundRemainder.length > 0 ? Buffer.concat([this.outboundRemainder, mulaw]) : mulaw;
 
@@ -255,14 +264,19 @@ export class AudioBridge {
   }
 
   private sendTwilioFrame(frame: Buffer): void {
-    this.options.transport.sendToTwilio(
-      JSON.stringify({
-        event: "media",
-        streamSid: this.options.streamSid,
-        media: { payload: frame.toString("base64") },
-      }),
-    );
+    // Exactly the documented Twilio media message: event, the CURRENT
+    // streamSid, and base64 mu-law 8kHz mono. Serialised to a string so ws
+    // sends a TEXT frame - Twilio ignores binary frames on a Media Stream.
+    const payload = JSON.stringify({
+      event: "media",
+      streamSid: this.options.streamSid,
+      media: { payload: frame.toString("base64") },
+    });
+
+    this.options.transport.sendToTwilio(payload);
     this.stats.twilioFramesOut++;
+    this.stats.twilio_media_messages_sent++;
+    this.stats.twilio_media_bytes_sent += frame.length;
   }
 
   /**
