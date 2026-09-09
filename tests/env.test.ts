@@ -25,7 +25,7 @@ describe("env validation", () => {
   it("applies documented defaults", () => {
     const env = parseEnv(mockBase as NodeJS.ProcessEnv);
     expect(env.LYZR_VOICE_API_BASE).toBe("https://voice-livekit.studio.lyzr.ai/v1");
-    expect(env.AUDIO_PRECONNECT_BUFFER_MS).toBe(4000);
+    expect(env.AUDIO_PRECONNECT_BUFFER_MS).toBe(1000);
     expect(env.MOCK_EXTERNAL_SERVICES).toBe(true);
   });
 

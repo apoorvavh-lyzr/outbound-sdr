@@ -22,6 +22,9 @@ import { buildWav } from "../audio/wav.js";
 /** 20 ms at the capture rate - matches Twilio's cadence. */
 const CAPTURE_FRAME_MS = 20;
 
+/** Upper bound on queued outbound frames; beyond this we drop, not lag. */
+const MAX_CAPTURE_BACKLOG_MS = 300;
+
 /** Cap on buffered debug audio: ~10s of 48kHz mono PCM16. */
 const DEBUG_AUDIO_MAX_BYTES = 48000 * 2 * 10;
 
@@ -161,8 +164,9 @@ export class LiveKitRoomBridge {
     );
 
     // Publish the prospect's audio as a microphone track.
-    // A 1s internal queue absorbs jitter between Twilio's cadence and LiveKit's.
-    const source = new AudioSource(this.captureSampleRate, 1, 1000);
+    // Just enough queue to absorb jitter between Twilio's 20ms cadence and
+    // LiveKit's pacing. A large queue would simply become standing latency.
+    const source = new AudioSource(this.captureSampleRate, 1, 200);
     this.source = source;
 
     const track = LocalAudioTrack.createAudioTrack("prospect", source);
@@ -326,12 +330,12 @@ export class LiveKitRoomBridge {
   /**
    * Queues a frame and starts the pump.
    *
-   * The backlog is bounded at ~2s: if we ever get further behind than that the
-   * audio is stale anyway, so the OLDEST frames are dropped rather than growing
-   * unboundedly or stalling the bridge.
+   * The backlog is bounded tightly: captureFrame paces at real time, so a deep
+   * queue turns directly into conversational lag. Past the bound the OLDEST
+   * frames are dropped - being slightly clipped beats being seconds behind.
    */
   private enqueue(frame: AudioFrame): void {
-    const maxFrames = Math.ceil(2000 / CAPTURE_FRAME_MS);
+    const maxFrames = Math.ceil(MAX_CAPTURE_BACKLOG_MS / CAPTURE_FRAME_MS);
 
     this.frameQueue.push(frame);
     while (this.frameQueue.length > maxFrames) this.frameQueue.shift();

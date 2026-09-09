@@ -47,7 +47,7 @@ export const envSchema = z
 
     DATABASE_URL: optionalStr,
 
-    AUDIO_PRECONNECT_BUFFER_MS: int(4000, 500),
+    AUDIO_PRECONNECT_BUFFER_MS: int(1000, 100),
     CALL_RATE_LIMIT_MAX: int(30, 1),
     CALL_RATE_LIMIT_WINDOW_MS: int(60000, 1000),
 

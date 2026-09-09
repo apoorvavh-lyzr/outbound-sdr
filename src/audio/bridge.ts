@@ -3,6 +3,13 @@ import { decodeMuLaw, encodeMuLaw } from "./mulaw.js";
 import { createResampler, type AudioResampler } from "./resampler.js";
 
 export const TWILIO_SAMPLE_RATE = 8000;
+
+/**
+ * How much pre-connect caller audio is actually forwarded when the agent comes
+ * online. Kept short deliberately: every millisecond handed over becomes
+ * permanent conversational latency.
+ */
+const FLUSH_KEEP_MS = 200;
 /** 20 ms of 8 kHz mu-law = 160 bytes, Twilio's native frame size. */
 export const TWILIO_FRAME_BYTES = 160;
 
@@ -151,18 +158,34 @@ export class AudioBridge {
     return { ...this.stats, agentSampleRates: [...this.stats.agentSampleRates] };
   }
 
-  /** Flushes buffered caller audio once the agent side is live. */
+  /**
+   * Flushes buffered caller audio once the agent side is live.
+   *
+   * Only the most recent FLUSH_KEEP_MS is forwarded. LiveKit paces capture at
+   * real time, so anything handed over here becomes STANDING latency that never
+   * drains - flushing a multi-second backlog would leave the agent permanently
+   * that far behind the caller. The outbound agent speaks first anyway, so the
+   * discarded audio is near-silence from before the conversation started.
+   */
   markAgentReady(): void {
     if (this.agentReady || this.closed) return;
     this.agentReady = true;
 
+    const keepFrames = Math.max(1, Math.ceil(FLUSH_KEEP_MS / 20));
     const queued = this.preconnectQueue;
+    const kept = queued.slice(-keepFrames);
     this.preconnectQueue = [];
-    for (const pcm of queued) this.forwardPcmToAgent(pcm);
+
+    for (const pcm of kept) this.forwardPcmToAgent(pcm);
 
     this.log.info(
-      { event: "audio_bridge_started", flushedFrames: queued.length, streamSid: this.options.streamSid },
-      "agent audio path ready; flushed pre-connect audio",
+      {
+        event: "audio_bridge_started",
+        flushedFrames: kept.length,
+        discardedFrames: queued.length - kept.length,
+        streamSid: this.options.streamSid,
+      },
+      "agent audio path ready; flushed recent pre-connect audio",
     );
   }
 

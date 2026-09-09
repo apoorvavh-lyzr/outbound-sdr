@@ -94,13 +94,26 @@ describe("Twilio -> agent direction", () => {
 });
 
 describe("pre-connect buffering", () => {
+  it("never flushes a multi-second backlog, which would become standing latency", () => {
+    // LiveKit paces capture at real time, so anything flushed here delays every
+    // later word by the same amount, permanently.
+    const { bridge, toAgent } = setup({ preconnectBufferMs: 4000 });
+
+    for (let i = 0; i < 200; i++) bridge.handleTwilioAudio(twilioFrame()); // 4s
+    bridge.markAgentReady();
+
+    // At most ~200ms (10 frames of 20ms) may carry over.
+    expect(toAgent.length).toBeLessThanOrEqual(10);
+  });
+
   it("holds caller audio until Lyzr is ready, then flushes it in order", () => {
     const { bridge, toAgent } = setup();
 
     for (let i = 0; i < 5; i++) bridge.handleTwilioAudio(twilioFrame());
-    expect(toAgent).toHaveLength(0); // nothing lost, nothing sent early
+    expect(toAgent).toHaveLength(0); // nothing sent early
     expect(bridge.getStats().bufferedFrames).toBe(5);
 
+    // Under the keep window, so all five carry over.
     bridge.markAgentReady();
     expect(toAgent).toHaveLength(5);
     expect(bridge.getStats().droppedFrames).toBe(0);
@@ -114,7 +127,8 @@ describe("pre-connect buffering", () => {
     expect(bridge.getStats().droppedFrames).toBe(40);
 
     bridge.markAgentReady();
-    expect(toAgent).toHaveLength(10);
+    // Bounded by the 200ms keep window, not the 200ms buffer cap.
+    expect(toAgent.length).toBeLessThanOrEqual(10);
   });
 
   it("flushes only once even if marked ready repeatedly", () => {
