@@ -19,6 +19,8 @@ export class ClonedAgentCleanup {
     private readonly client: LyzrClient,
     private readonly retentionHours: number,
     private readonly logger: Logger,
+    /** Never deleted, whatever the database says. */
+    private readonly protectedAgentId?: string,
   ) {}
 
   get enabled(): boolean {
@@ -34,6 +36,15 @@ export class ClonedAgentCleanup {
 
     let deleted = 0;
     for (const { id, agentId } of expired) {
+      if (this.protectedAgentId && agentId === this.protectedAgentId) {
+        // The saved production agent is reused, never disposable.
+        this.logger.warn(
+          { event: "cloned_agent_cleanup_skipped", callId: id },
+          "refusing to delete the configured base agent",
+        );
+        await this.repository.clearClonedAgent(id);
+        continue;
+      }
       try {
         await this.client.deleteAgent(agentId);
         await this.repository.clearClonedAgent(id);

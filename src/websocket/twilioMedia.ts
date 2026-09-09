@@ -122,11 +122,19 @@ class MediaSession {
     });
     await this.deps.service.markStreamStatus(callId, "stream_connecting");
 
-    const agentId = call.lyzr_call_agent_id;
+    const meta = (call.metadata ?? {}) as Record<string, unknown>;
+    // A clone (when enabled) wins; otherwise this is the reused saved agent.
+    const agentId =
+      call.lyzr_call_agent_id ?? (typeof meta.agentId === "string" ? meta.agentId : call.lyzr_base_agent_id);
     if (!agentId) {
       this.fail(new Error("Call has no prepared Lyzr agent"));
       return;
     }
+
+    const sessionConfig =
+      meta.sessionConfig && typeof meta.sessionConfig === "object"
+        ? (meta.sessionConfig as Record<string, unknown>)
+        : undefined;
 
     // The bridge exists BEFORE the room is joined so caller audio arriving
     // during connection is buffered rather than lost.
@@ -144,11 +152,15 @@ class MediaSession {
       logger: this.log,
     });
 
-    await this.joinAgentRoom(agentId, callId);
+    await this.joinAgentRoom(agentId, callId, sessionConfig);
   }
 
-  private async joinAgentRoom(agentId: string, callId: string): Promise<void> {
-    const session = await this.deps.lyzr.startVoiceSession(agentId, `twilio-${callId}`);
+  private async joinAgentRoom(
+    agentId: string,
+    callId: string,
+    sessionConfig?: Record<string, unknown>,
+  ): Promise<void> {
+    const session = await this.deps.lyzr.startVoiceSession(agentId, `twilio-${callId}`, sessionConfig);
     this.sessionId = session.sessionId;
 
     this.log.info(

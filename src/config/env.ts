@@ -30,6 +30,9 @@ export const envSchema = z
     LYZR_VOICE_API_BASE: optionalStr.pipe(z.string().default("https://voice-livekit.studio.lyzr.ai/v1")),
     LYZR_TRANSCRIPT_URL_TEMPLATE: optionalStr,
     LYZR_SESSION_TIMEOUT_MS: int(15000, 1000),
+    // Emergency fallback only. The production path reuses the saved agent and
+    // passes lead context as per-session agentConfig.
+    LYZR_ENABLE_AGENT_CLONING: bool.optional().default(false),
     LYZR_HTTP_TIMEOUT_MS: int(20000, 1000),
 
     TWILIO_ACCOUNT_SID: optionalStr,

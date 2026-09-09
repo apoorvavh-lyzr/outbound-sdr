@@ -124,8 +124,16 @@ export class CallService {
 
     await repository.update(call.id, {
       status: "agent_prepared",
-      lyzr_call_agent_id: prepared.agentId,
-      metadata: { strategy: prepared.strategy, cloned: prepared.cloned, removedFields: prepared.removedFields },
+      // Only a CLONE goes here. Recording the reused base agent id would make
+      // the retention sweep delete the permanent production agent.
+      lyzr_call_agent_id: prepared.cloned ? prepared.agentId : null,
+      metadata: {
+        strategy: prepared.strategy,
+        cloned: prepared.cloned,
+        removedFields: prepared.removedFields,
+        agentId: prepared.agentId,
+        ...(prepared.sessionConfig ? { sessionConfig: prepared.sessionConfig } : {}),
+      },
     });
 
     // Final pre-dial gate.

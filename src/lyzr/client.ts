@@ -226,14 +226,21 @@ export class LyzrClient {
    * Retried on transient failures because this runs BEFORE any audio flows, so
    * a retry cannot interrupt a live conversation.
    */
-  async startVoiceSession(agentId: string, userIdentity: string): Promise<LiveKitSession> {
+  async startVoiceSession(
+    agentId: string,
+    userIdentity: string,
+    agentConfig?: Record<string, unknown>,
+  ): Promise<LiveKitSession> {
     const url = `${this.options.voiceApiBase.replace(/\/+$/, "")}/sessions/start`;
 
     const raw = await retry(
       () =>
         this.request<unknown>(
           url,
-          { method: "POST", body: JSON.stringify({ agentId, userIdentity }) },
+          {
+            method: "POST",
+            body: JSON.stringify({ agentId, userIdentity, ...(agentConfig ? { agentConfig } : {}) }),
+          },
           "lyzr startVoiceSession",
           this.options.sessionTimeoutMs,
         ),

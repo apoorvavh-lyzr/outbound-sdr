@@ -42,7 +42,8 @@
         "time_zone": "Asia/Kolkata"
       },
       "conversation_start": {
-        "who": "human"
+        "who": "ai",
+        "greeting": "Say, \"\"Hi {{first_name}}, this is the AI assistant from Lyzr. You recently reached out to us about speaking with the team, so I'm following up to help you get a time booked. Is now a good time for a quick chat?\"\""
       },
       "turn_detection": "english",
       "noise_cancellation": {
@@ -110,7 +111,7 @@
       }
     },
     "createdAt": "2026-09-09T10:42:17.652Z",
-    "updatedAt": "2026-09-09T11:02:53.702Z",
+    "updatedAt": "2026-09-09T19:02:36.877Z",
     "updatedByUserId": "mem_cmp6n1m6g1otw0sqib9o7c91e"
   }
 }

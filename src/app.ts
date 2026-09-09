@@ -61,7 +61,10 @@ export async function buildApp(options: BuildAppOptions): Promise<BuiltApp> {
   });
 
   const strategy =
-    options.strategy ?? (env.MOCK_EXTERNAL_SERVICES ? new MockContextStrategy() : selectContextStrategy(lyzr));
+    options.strategy ??
+    (env.MOCK_EXTERNAL_SERVICES
+      ? new MockContextStrategy()
+      : selectContextStrategy(lyzr, env.LYZR_ENABLE_AGENT_CLONING));
 
   const twilioClient =
     options.twilioClient ??
@@ -114,7 +117,13 @@ export async function buildApp(options: BuildAppOptions): Promise<BuiltApp> {
     return reply.status(status).send(appError.toJSON());
   });
 
-  const cleanup = new ClonedAgentCleanup(repository, lyzr, env.CLONED_AGENT_RETENTION_HOURS, logger);
+  const cleanup = new ClonedAgentCleanup(
+    repository,
+    lyzr,
+    env.CLONED_AGENT_RETENTION_HOURS,
+    logger,
+    env.LYZR_BASE_AGENT_ID,
+  );
 
   registerHealthRoutes(app, env, db);
   registerCallRoutes(app, { env, service, transcripts: createTranscriptProvider(env) });

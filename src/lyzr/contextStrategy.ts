@@ -10,6 +10,12 @@ export interface PreparedAgent {
   cloned: boolean;
   strategy: string;
   removedFields: string[];
+  /**
+   * Per-session overrides POSTed to /sessions/start alongside the agent id.
+   * This is how lead context reaches a REUSED agent without touching the
+   * saved configuration.
+   */
+  sessionConfig?: Record<string, unknown>;
 }
 
 export interface AgentContextStrategy {
@@ -91,6 +97,76 @@ export function applyOutboundConversationStart(
     config: { ...config, conversation_start: { ...start, who: "ai" } },
     applied: true,
   };
+}
+
+/**
+ * Builds the per-session `agentConfig` sent to /sessions/start.
+ *
+ * `conversation_start.greeting` is REQUIRED by the API whenever `who` is "ai",
+ * so the base agent's own greeting is carried through. Omitting it is rejected,
+ * and an agent told to speak first with nothing to say stays silent.
+ */
+export function buildSessionConfig(
+  baseConfig: Record<string, unknown>,
+  lead: Lead,
+): Record<string, unknown> {
+  const start =
+    baseConfig.conversation_start && typeof baseConfig.conversation_start === "object"
+      ? (baseConfig.conversation_start as Record<string, unknown>)
+      : {};
+
+  const greeting = typeof start.greeting === "string" ? start.greeting : "";
+
+  return {
+    dynamic_variable_defaults: mergeDynamicVariables(baseConfig.dynamic_variable_defaults, lead),
+    conversation_start: { ...start, who: "ai", greeting },
+  };
+}
+
+/**
+ * DEFAULT STRATEGY: reuse the saved base agent and pass this lead's context as
+ * per-session `agentConfig`.
+ *
+ * Nothing is created, so there is nothing to clean up and the permanent agent
+ * is never touched - the saved configuration stays the single source of truth.
+ */
+export class SessionConfigStrategy implements AgentContextStrategy {
+  readonly name = "session-config";
+  private readonly log = getLogger().child({ component: "session-config-strategy" });
+
+  constructor(private readonly client: LyzrClient) {}
+
+  async prepareCallAgent(baseAgentId: string, lead: Lead, callId: string): Promise<PreparedAgent> {
+    const base = await this.client.getAgent(baseAgentId);
+    const config = (base.config ?? {}) as Record<string, unknown>;
+
+    // The saved agent must still carry the calendar tooling; we just do not
+    // modify it. A read-only check keeps the pre-dial guarantee intact.
+    const missing = missingCalendarActions(config);
+    if (missing.length > 0) {
+      throw new PreflightError(
+        "calendar_tools_missing",
+        `Base agent is missing required calendar actions: ${missing.join(", ")}`,
+        { missing },
+      );
+    }
+
+    const sessionConfig = buildSessionConfig(config, lead);
+    const greeting = (sessionConfig.conversation_start as Record<string, unknown>).greeting;
+    if (!greeting) {
+      throw new PreflightError(
+        "missing_greeting",
+        "Base agent has no conversation_start.greeting; an outbound agent set to speak first would stay silent",
+      );
+    }
+
+    this.log.info(
+      { event: "lyzr_runtime_context_prepared", callId, agentId: baseAgentId },
+      "reusing saved agent with per-session context",
+    );
+
+    return { agentId: baseAgentId, cloned: false, strategy: this.name, removedFields: [], sessionConfig };
+  }
 }
 
 /**
@@ -177,32 +253,9 @@ export class CloneAgentStrategy implements AgentContextStrategy {
 }
 
 /**
- * Injects context at session-start time instead of cloning.
- *
- * NOT ENABLED: as of the current published Lyzr docs, POST /session/start
- * documents only `{ agentId }`. This exists so the service can switch to the
- * cheaper path the moment runtime injection is documented, without reworking
- * the call flow.
+ * Reuse of the saved agent is the production path. Cloning is only reachable by
+ * explicitly setting LYZR_ENABLE_AGENT_CLONING, and is never the default.
  */
-export class RuntimeVariableStrategy implements AgentContextStrategy {
-  readonly name = "runtime-variables";
-
-  constructor(private readonly baseAgentIdOverride?: string) {}
-
-  async prepareCallAgent(baseAgentId: string, _lead: Lead, _callId: string): Promise<PreparedAgent> {
-    return {
-      agentId: this.baseAgentIdOverride ?? baseAgentId,
-      cloned: false,
-      strategy: this.name,
-      removedFields: [],
-    };
-  }
-}
-
-/**
- * Picks the safest strategy that the documented API actually supports.
- * Cloning is chosen because runtime injection is undocumented.
- */
-export function selectContextStrategy(client: LyzrClient): AgentContextStrategy {
-  return new CloneAgentStrategy(client);
+export function selectContextStrategy(client: LyzrClient, enableCloning = false): AgentContextStrategy {
+  return enableCloning ? new CloneAgentStrategy(client) : new SessionConfigStrategy(client);
 }

@@ -101,8 +101,11 @@ describe("clone payload built from the real config", () => {
     expect(config.agent_name).toBe("LYZR Demo SDR - outbound - call-abc");
   });
 
-  it("sets the agent to speak first, since we are dialling out", () => {
-    expect(config.conversation_start).toEqual({ who: "ai" });
-    expect(built.conversationStartApplied).toBe(true);
+  it("sets the agent to speak first and keeps the greeting it needs", () => {
+    const start = config.conversation_start as Record<string, unknown>;
+    expect(start.who).toBe("ai");
+    // The API rejects who:"ai" without a greeting, so it must survive cloning.
+    expect(typeof start.greeting).toBe("string");
+    expect((start.greeting as string).length).toBeGreaterThan(0);
   });
 });
