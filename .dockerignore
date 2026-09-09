@@ -1,0 +1,9 @@
+node_modules
+dist
+tests
+scratch
+coverage
+.env
+.env.*
+*.log
+prd

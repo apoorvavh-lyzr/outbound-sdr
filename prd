@@ -1,0 +1,2067 @@
+You are a senior Staff/Principal backend engineer specializing in real-time voice systems, WebSockets, Twilio, telephony, audio codecs, TypeScript, and production AI infrastructure.
+
+Your task is to BUILD this solution completely in the current repository.
+
+DO NOT just give me an architecture document.
+DO NOT stop after scaffolding.
+DO NOT leave TODOs.
+DO NOT leave placeholder audio functions.
+DO NOT provide pseudo-code instead of working code.
+DO NOT silently invent undocumented external API behavior.
+DO NOT hardcode secrets.
+DO NOT expose credentials in logs.
+DO NOT mutate my existing production/base Lyzr Voice Agent.
+DO NOT place a real phone call during automated tests.
+
+You may inspect current official documentation if internet access is available.
+
+When an external API behavior is uncertain:
+1. verify against current official documentation first;
+2. isolate uncertainty behind a typed adapter;
+3. finish everything else;
+4. provide exactly one manual verification command if credentials are required.
+
+The end result must be deployable to Railway and usable from a Lyzr SuperFlow HTTP Request node.
+
+==================================================
+1. BUSINESS OBJECTIVE
+==================================================
+
+Build an outbound AI phone-call service for Lyzr demo-form leads.
+
+The application receives lead context from Lyzr SuperFlow and automatically initiates a phone call using Twilio.
+
+The prospect must speak to my existing Lyzr Voice Agent.
+
+The Lyzr Voice Agent must retain its existing Google Calendar tools so it can:
+
+- check real calendar availability
+- offer real available slots
+- create a Google Calendar event
+- invite the prospect
+- confirm the booking only after the calendar tool succeeds
+
+The system supports TWO call modes:
+
+A. BOOKING MODE
+The prospect submitted the Lyzr demo form but has NOT booked a meeting.
+
+B. CONFIRMATION MODE
+The prospect already has a meeting scheduled.
+
+Both modes MUST use the same:
+
+POST /api/call
+
+endpoint and the same telephony infrastructure.
+
+Do not create separate booking and confirmation services.
+
+==================================================
+2. OVERALL ARCHITECTURE
+==================================================
+
+Existing SuperFlow handles:
+
+Form/Webhook
+→ HubSpot create/update
+→ calendar existing-meeting check
+→ normalize result
+→ IF meeting_found
+→ set call_mode
+→ POST /api/call
+
+This service handles:
+
+POST /api/call
+→ prepare lead-specific Lyzr Voice Agent context
+→ Twilio outbound call
+→ Twilio bidirectional Media Stream
+→ WebSocket bridge
+→ Lyzr external Voice WebSocket
+→ full-duplex AI conversation
+→ track call lifecycle
+→ expose call status
+→ optionally callback SuperFlow on completion
+
+The Lyzr Voice Agent itself handles:
+
+conversation
+→ Google Calendar FIND_FREE_SLOTS
+→ offer actual slots
+→ Google Calendar CREATE_EVENT
+→ meeting booking
+
+The backend should NOT reimplement Google Calendar booking.
+
+==================================================
+3. EXISTING LYZR VOICE AGENT
+==================================================
+
+Existing base agent:
+
+Agent ID:
+
+6aa13809b4c51e185bbca6ba
+
+Agent Name:
+
+LYZR Demo SDR
+
+Lyzr Voice API base:
+
+https://voice-livekit.studio.lyzr.ai/v1
+
+Use:
+
+GET /agents/{agentId}
+
+Header:
+
+x-api-key: ${LYZR_API_KEY}
+
+Do NOT overwrite or modify the base agent.
+
+The base agent currently contains important configuration including:
+
+- realtime voice engine
+- prompt
+- agent_instructions
+- dynamic_variable_defaults
+- conversation_start
+- Google Calendar tools
+- provider credential references
+- audio/background configuration
+- other voice configuration
+
+The base agent currently uses dynamic variables including:
+
+first_name
+last_name
+email
+phone
+company
+use_case
+call_mode
+meeting_booked
+meeting_id
+meeting_start
+meeting_end
+meeting_link
+meeting_owner
+timezone
+time_zone
+
+Preserve compatible configuration when preparing a call-specific agent.
+
+==================================================
+4. IMPORTANT DYNAMIC-CONTEXT STRATEGY
+==================================================
+
+FIRST verify current Lyzr documentation to determine whether the external Voice session endpoint supports per-session runtime dynamic variables.
+
+If the current documented API supports runtime variable/context injection:
+
+PREFER THAT.
+
+Do NOT create unnecessary cloned agents.
+
+If the external Voice session endpoint DOES NOT document runtime variable injection:
+
+use a per-call Voice Agent clone.
+
+This fallback is necessary so each outbound call receives the correct:
+
+first_name
+last_name
+email
+phone
+company
+use_case
+call_mode
+timezone
+meeting details
+
+Implement this behind an abstraction:
+
+interface AgentContextStrategy {
+  prepareCallAgent(baseAgentId, lead, callId): Promise<PreparedAgent>
+}
+
+Implement:
+
+RuntimeVariableStrategy
+
+if supported by current documented APIs.
+
+Implement:
+
+CloneAgentStrategy
+
+as the documented fallback.
+
+The service should automatically use the safest documented strategy.
+
+Do not assume runtime variables are accepted if the docs do not show them.
+
+==================================================
+5. CALL-SPECIFIC AGENT CLONING FALLBACK
+==================================================
+
+Implement class:
+
+LyzrClient
+
+Methods should include approximately:
+
+getAgent(agentId)
+
+createCallAgent(baseAgentId, lead, callId)
+
+startExternalVoiceSession(agentId, optionalContext)
+
+getTranscript(sessionId) if documented
+
+When cloning:
+
+1. GET the base agent.
+2. Extract agent.config.
+3. Deep clone it.
+4. Sanitize server-managed/sensitive fields.
+5. Inject lead-specific dynamic_variable_defaults.
+6. Preserve required Google Calendar tool configuration.
+7. Preserve authentication/credential references required for those tools.
+8. Force outbound conversation start to AI/agent first if supported.
+9. Give cloned agent a unique name.
+10. POST the new agent.
+11. Validate the response.
+12. Confirm required calendar tools remain attached BEFORE dialing.
+
+Never mutate the base agent.
+
+Suggested cloned name:
+
+LYZR Demo SDR - outbound - <callId>
+
+Do NOT copy server-generated or sensitive fields such as:
+
+id
+agent_id
+user_id
+session_id
+createdAt
+updatedAt
+updatedByUserId
+api_key
+
+Also exclude other fields rejected by the current create schema.
+
+Use the current documented create-agent schema as the primary allowlist.
+
+If the create endpoint rejects copied optional fields:
+
+retry ONCE using a stricter documented allowlist.
+
+Log field names removed, but never values containing secrets.
+
+==================================================
+6. REQUIRED CALENDAR TOOLS
+==================================================
+
+The call-specific agent MUST preserve:
+
+GOOGLECALENDAR_FIND_FREE_SLOTS
+
+GOOGLECALENDAR_CREATE_EVENT
+
+These are critical.
+
+Before placing the Twilio call:
+
+verify that the prepared agent has both required actions.
+
+If either is missing:
+
+DO NOT PLACE THE CALL.
+
+Return a clear error.
+
+The base agent may contain an additional:
+
+GOOGLECALENDAR_DELETE_EVENT
+
+Do NOT use DELETE_EVENT as a fake rescheduling mechanism.
+
+Do not depend on destructive actions for the MVP.
+
+==================================================
+7. LEAD PAYLOAD
+==================================================
+
+POST /api/call accepts:
+
+{
+  "phone": "+919999999999",
+  "first_name": "Apoorva",
+  "last_name": "VH",
+  "email": "apoorva@example.com",
+  "company": "Acme",
+  "use_case": "AI agent for customer support",
+  "call_mode": "booking",
+  "timezone": "Asia/Kolkata",
+
+  "meeting_booked": false,
+  "meeting_id": null,
+  "meeting_start": null,
+  "meeting_end": null,
+  "meeting_link": null,
+  "meeting_owner": null
+}
+
+Required:
+
+phone
+email
+call_mode
+
+Allowed call_mode values:
+
+booking
+confirmation
+
+Use zod validation.
+
+Validate phone as E.164.
+
+Normalize email.
+
+Optional defaults:
+
+first_name = "there"
+last_name = ""
+company = ""
+use_case = ""
+timezone = "Asia/Kolkata"
+
+For booking:
+
+meeting_booked defaults to false.
+
+For confirmation:
+
+meeting_booked MUST be true.
+
+Confirmation mode should normally include:
+
+meeting_id
+meeting_start
+meeting_end
+meeting_link
+meeting_owner
+
+Do not fail merely because meeting_link or meeting_owner is unavailable.
+
+==================================================
+8. DYNAMIC VARIABLE MERGING
+==================================================
+
+Merge base dynamic_variable_defaults with:
+
+{
+  first_name,
+  last_name,
+  email,
+  phone,
+  company,
+  use_case,
+  call_mode,
+  timezone,
+  time_zone: timezone,
+  meeting_booked,
+  meeting_id,
+  meeting_start,
+  meeting_end,
+  meeting_link,
+  meeting_owner
+}
+
+Respect the types expected by Lyzr.
+
+If the existing agent uses strings:
+
+convert values appropriately.
+
+For example:
+
+meeting_booked:
+"true" or "false"
+
+rather than a boolean if required by existing config.
+
+Do not delete unrelated dynamic defaults from the base agent.
+
+==================================================
+9. BOOKING MODE BEHAVIOR
+==================================================
+
+call_mode = booking
+
+Meaning:
+
+The prospect submitted the demo form but has no existing meeting.
+
+The Voice Agent should:
+
+1. introduce itself
+2. mention that the prospect requested to speak with Lyzr
+3. acknowledge known use-case context
+4. ask if now is a good time
+5. ask at most one useful discovery question
+6. ask when they would like to meet
+7. call GOOGLECALENDAR_FIND_FREE_SLOTS
+8. offer only real returned availability
+9. offer no more than 2–3 useful choices
+10. make timezone clear
+11. wait for explicit slot selection
+12. call GOOGLECALENDAR_CREATE_EVENT
+13. invite the prospect email
+14. create a 30-minute demo
+15. confirm only after tool success
+16. repeat date/time/timezone
+17. end naturally
+
+If prospect declines scheduling:
+
+do not pressure them.
+
+End gracefully and record the outcome.
+
+==================================================
+10. CONFIRMATION MODE BEHAVIOR
+==================================================
+
+call_mode = confirmation
+
+Meaning:
+
+The prospect already has a meeting scheduled.
+
+Inject:
+
+meeting_booked
+meeting_id
+meeting_start
+meeting_end
+meeting_link
+meeting_owner
+
+The Voice Agent should:
+
+1. tell the prospect they already have a meeting
+2. mention the scheduled date/time
+3. ask whether the timing still works
+4. if yes:
+   - confirm
+   - ask one short meeting-preparation/context question
+   - capture their answer
+   - finish quickly
+
+If the meeting time does NOT work:
+
+The agent may:
+
+- ask for preferred alternate day/time
+- call GOOGLECALENDAR_FIND_FREE_SLOTS
+- offer 2–3 actual alternatives
+
+BUT:
+
+DO NOT CLAIM THE MEETING HAS BEEN RESCHEDULED UNLESS A REAL SUPPORTED EVENT-UPDATE/RESCHEDULE TOOL EXISTS.
+
+If no supported event-update action is attached:
+
+capture:
+
+reschedule_required = true
+preferred_replacement_slot
+prospect_notes
+
+Do NOT:
+
+delete the existing meeting
+create a duplicate meeting
+pretend DELETE + CREATE is automatically equivalent to rescheduling
+claim success falsely
+
+The status/result data should make this available to downstream SuperFlow.
+
+==================================================
+11. EXTERNAL LYZR VOICE SESSION
+==================================================
+
+Current known external voice service:
+
+POST
+
+https://voice-sip.voice.lyzr.app/session/start
+
+Verify the current official Lyzr docs before implementing.
+
+Known minimum body pattern:
+
+{
+  "agentId": "<prepared-agent-id>"
+}
+
+If runtime dynamic context is documented, use it.
+
+Expected response should be runtime validated.
+
+Require at minimum:
+
+sessionId
+wsUrl
+
+Potential audioConfig should be captured.
+
+Treat wsUrl as opaque.
+
+Connect exactly to the returned wsUrl.
+
+Do NOT construct a WebSocket URL manually.
+
+Do NOT invent authentication headers unless current official docs require them.
+
+Use timeout and retry for transient 5xx/network failures BEFORE audio streaming begins.
+
+==================================================
+12. LYZR AUDIO FORMAT
+==================================================
+
+Verify current official docs.
+
+Known expected audio format:
+
+PCM16
+mono
+24 kHz
+
+However:
+
+do not blindly hardcode 24000 if response.audioConfig supplies a supported sample rate.
+
+Implement configuration as:
+
+lyzrSampleRate =
+session.audioConfig?.sampleRate ?? 24000
+
+Validate:
+
+channels === 1
+
+unless current docs explicitly support additional layouts.
+
+PCM16 should be signed 16-bit little-endian unless current API documentation states otherwise.
+
+==================================================
+13. TWILIO OUTBOUND CALLING
+==================================================
+
+Use the Twilio Node SDK.
+
+Environment variables:
+
+TWILIO_ACCOUNT_SID
+TWILIO_AUTH_TOKEN
+TWILIO_PHONE_NUMBER
+
+Current number:
+
++16263133414
+
+Create outbound call using:
+
+client.calls.create()
+
+Required:
+
+to = lead.phone
+
+from = process.env.TWILIO_PHONE_NUMBER
+
+Provide inline TwiML:
+
+<Response>
+  <Connect>
+    <Stream url="wss://PUBLIC_HOST/twilio-media">
+      <Parameter name="callId" value="INTERNAL_CALL_ID" />
+    </Stream>
+  </Connect>
+</Response>
+
+Use XML escaping correctly.
+
+Prefer Twilio Stream custom Parameters rather than query-string context.
+
+Recover callId from Twilio start.customParameters.
+
+Do not put email/company/etc directly in the WSS URL.
+
+==================================================
+14. TWILIO STATUS CALLBACK
+==================================================
+
+When creating Twilio call configure:
+
+statusCallback:
+${PUBLIC_BASE_URL}/api/twilio/status
+
+statusCallbackMethod:
+POST
+
+statusCallbackEvent:
+
+initiated
+ringing
+answered
+completed
+
+Also correctly handle terminal Twilio statuses such as:
+
+busy
+failed
+no-answer
+canceled
+
+Update database state.
+
+Validate Twilio HTTP webhook signature.
+
+Use Twilio request-validation utilities where appropriate.
+
+==================================================
+15. TWILIO MEDIA STREAM
+==================================================
+
+Implement WebSocket:
+
+WS /twilio-media
+
+Twilio bidirectional Stream audio format:
+
+audio/x-mulaw
+8000 Hz
+mono
+
+Incoming event types may include:
+
+connected
+start
+media
+mark
+stop
+
+Runtime validate important fields.
+
+On start:
+
+capture:
+
+streamSid
+callSid if supplied
+customParameters.callId
+
+Load the internal call record.
+
+Reject unknown/missing callId.
+
+==================================================
+16. AUDIO BRIDGE
+==================================================
+
+TWILIO → LYZR:
+
+Twilio base64 μ-law 8 kHz
+→ decode G.711 μ-law
+→ signed PCM16 8 kHz
+→ resample to Lyzr sample rate (normally 24 kHz)
+→ send to Lyzr WebSocket in the exact documented/observed frame format
+
+LYZR → TWILIO:
+
+Lyzr PCM16
+→ resample to 8 kHz PCM16
+→ encode G.711 μ-law
+→ base64
+→ send:
+
+{
+  "event": "media",
+  "streamSid": "...",
+  "media": {
+    "payload": "<base64 mulaw>"
+  }
+}
+
+Never prepend WAV headers.
+
+Never write audio to disk.
+
+Never spawn ffmpeg per frame.
+
+==================================================
+17. AUDIO CODEC REQUIREMENTS
+==================================================
+
+Do not leave codec TODOs.
+
+Implement:
+
+decodeMuLaw(buffer): Int16Array/Buffer
+
+encodeMuLaw(pcm16): Buffer
+
+Use a stable package only if it is maintained and clearly safer.
+
+Otherwise implement tested G.711 μ-law codec directly.
+
+Add unit tests against known values.
+
+==================================================
+18. RESAMPLING
+==================================================
+
+For common path:
+
+8 kHz → 24 kHz
+
+24 kHz → 8 kHz
+
+factor is exactly 3.
+
+Implement a low-latency streaming speech-quality resampler.
+
+Avoid naïvely duplicating samples without filtering if a better lightweight solution is practical.
+
+Maintain state across packets if needed.
+
+Do not create a new resampler object per 20ms frame.
+
+Do not block the Node event loop.
+
+Design resampler behind:
+
+AudioResampler
+
+so implementation can later be swapped.
+
+Tests:
+
+- sample counts
+- continuity across packet boundaries
+- empty input
+- short chunks
+- clipping bounds
+
+==================================================
+19. LYZR WEBSOCKET PROTOCOL ADAPTER
+==================================================
+
+Do NOT invent protocol messages.
+
+Implement:
+
+LyzrAudioProtocolAdapter
+
+Responsibilities:
+
+- consume incoming Lyzr WS messages
+- identify audio frames
+- safely ignore/log control frames
+- convert documented JSON audio envelopes if current docs show them
+- support binary PCM if that is the documented form
+- expose normalized PCM audio Buffer
+
+Outgoing:
+
+adapter.encodeAudio(pcmBuffer)
+
+should emit exactly the current documented expected message/frame format.
+
+If protocol details are only discoverable at runtime:
+
+support safe diagnostic logging of:
+
+message type
+frame length
+JSON keys
+
+DO NOT log raw audio or secrets by default.
+
+Unknown frames must not crash the bridge.
+
+==================================================
+20. CONNECTION ORDER / FIRST AUDIO
+==================================================
+
+Do not lose the beginning of the call.
+
+POST /api/call should:
+
+1. validate request
+2. create internal callId
+3. prepare Lyzr call agent/context
+4. verify calendar tools
+5. persist record
+6. create Twilio outbound call
+7. return queued response
+
+When prospect answers:
+
+Twilio opens /twilio-media
+
+Immediately:
+
+1. resolve call record
+2. start Lyzr external voice session
+3. connect Lyzr WebSocket
+4. buffer incoming Twilio media while Lyzr connects
+5. once Lyzr WS OPEN:
+   flush buffer in order
+6. begin full duplex streaming
+
+Bound pre-connect audio queue.
+
+Suggested maximum:
+
+2–5 seconds.
+
+If limit exceeded:
+
+drop oldest safely or fail with a clear bridge error.
+
+Do not allow unbounded memory use.
+
+==================================================
+21. CONVERSATION START
+==================================================
+
+Outbound calls should have the AI speak first.
+
+When preparing call-specific Lyzr config:
+
+set the exact documented supported equivalent of:
+
+conversation_start.who = "ai"
+
+Do not guess alternate enum values.
+
+Verify against current API schema.
+
+If the API uses:
+
+agent
+
+rather than:
+
+ai
+
+use the documented value.
+
+==================================================
+22. BARGE-IN / INTERRUPTION
+==================================================
+
+The call must feel conversational.
+
+Support interruption where available.
+
+Twilio supports clearing buffered outbound media.
+
+Implement Twilio "clear" when the Lyzr protocol indicates interrupted speech or when appropriate based on documented interruption events.
+
+DO NOT fabricate Lyzr interruption events.
+
+If Lyzr itself handles turn-taking internally and simply stops emitting old audio:
+
+keep Twilio outbound buffer short.
+
+Implement mark/clear handling cleanly.
+
+==================================================
+23. API ENDPOINTS
+==================================================
+
+GET /health
+
+Response:
+
+{
+  "ok": true,
+  "service": "lyzr-outbound-voice"
+}
+
+GET /ready
+
+Verify:
+
+required environment variables exist
+database connection works
+
+Do NOT place external calls.
+
+POST /api/call
+
+Authentication required.
+
+Return quickly after Twilio queues the call.
+
+Example:
+
+{
+  "success": true,
+  "call_id": "...",
+  "twilio_call_sid": "CA...",
+  "status": "queued"
+}
+
+GET /api/calls/:callId
+
+Return sanitized call data:
+
+{
+  "call_id": "...",
+  "status": "...",
+  "phone": "...",
+  "email": "...",
+  "call_mode": "...",
+  "twilio_call_sid": "...",
+  "lyzr_agent_id": "...",
+  "lyzr_session_id": "...",
+  "created_at": "...",
+  "answered_at": "...",
+  "completed_at": "...",
+  "error": null
+}
+
+POST /api/twilio/status
+
+Twilio form-encoded callback.
+
+Validate signature.
+
+Update state.
+
+Return 204.
+
+WS /twilio-media
+
+Full duplex audio bridge.
+
+GET /api/calls/:callId/transcript
+
+Implement only against a verified/documented transcript API.
+
+==================================================
+24. CALL STATES
+==================================================
+
+Use explicit states:
+
+created
+agent_preparing
+agent_prepared
+queued
+initiated
+ringing
+answered
+stream_connecting
+streaming
+completed
+busy
+no_answer
+failed
+canceled
+
+Optionally:
+
+reschedule_required
+
+should be represented as an outcome flag rather than necessarily a telephony state.
+
+Implement valid transition checking.
+
+Do not allow nonsensical backwards transitions.
+
+==================================================
+25. DATABASE
+==================================================
+
+Use PostgreSQL in production.
+
+Railway DATABASE_URL.
+
+For local development:
+
+either PostgreSQL or SQLite fallback if implementation remains clean.
+
+Preferred:
+
+Drizzle ORM or Prisma.
+
+Avoid excessive framework complexity.
+
+Call table fields:
+
+id UUID primary key
+
+idempotency_key nullable unique
+
+phone
+email
+first_name
+last_name
+company
+use_case
+call_mode
+timezone
+
+meeting_booked
+meeting_id
+meeting_start
+meeting_end
+meeting_link
+meeting_owner
+
+status
+
+twilio_call_sid
+twilio_stream_sid
+
+lyzr_base_agent_id
+lyzr_call_agent_id
+lyzr_session_id
+
+reschedule_required boolean
+preferred_replacement_slot nullable
+prospect_notes nullable
+
+error_code nullable
+error_message nullable
+
+created_at
+updated_at
+answered_at nullable
+completed_at nullable
+
+raw_twilio_status JSONB nullable
+metadata JSONB nullable
+
+Do not store:
+
+Twilio Auth Token
+Lyzr API Key
+Authorization headers
+WebSocket tokens
+
+==================================================
+26. IDEMPOTENCY
+==================================================
+
+SuperFlow may retry.
+
+POST /api/call must support:
+
+Idempotency-Key
+
+If the same Idempotency-Key is received again:
+
+DO NOT create another Lyzr agent.
+DO NOT create another Twilio call.
+
+Return the existing call record/result.
+
+Use a database uniqueness constraint, not only in-memory state.
+
+==================================================
+27. AUTHENTICATION
+==================================================
+
+Protect:
+
+POST /api/call
+
+with:
+
+Authorization: Bearer ${SUPERFLOW_SHARED_SECRET}
+
+Use constant-time comparison if practical.
+
+Do not expose secret in logs.
+
+Optionally protect call lookup endpoints behind the same secret.
+
+==================================================
+28. TWILIO WEBHOOK VALIDATION
+==================================================
+
+Validate:
+
+POST /api/twilio/status
+
+using Twilio signature verification.
+
+For Media Stream WebSocket upgrade:
+
+validate Twilio origin/signature using the best officially supported mechanism available for WebSocket upgrade requests.
+
+Account for reverse-proxy headers used by Railway.
+
+Document assumptions in README.
+
+Do not block legitimate Railway traffic because of incorrect URL reconstruction.
+
+==================================================
+29. RATE LIMITING
+==================================================
+
+Rate-limit:
+
+POST /api/call
+
+Use a sensible production default.
+
+Avoid duplicate calling storms.
+
+If behind Railway proxy:
+
+trust proxy correctly.
+
+==================================================
+30. ENVIRONMENT CONFIGURATION
+==================================================
+
+Implement typed env validation on startup with zod.
+
+Required production variables:
+
+PORT
+PUBLIC_BASE_URL
+
+LYZR_API_KEY
+LYZR_BASE_AGENT_ID
+
+TWILIO_ACCOUNT_SID
+TWILIO_AUTH_TOKEN
+TWILIO_PHONE_NUMBER
+
+SUPERFLOW_SHARED_SECRET
+
+DATABASE_URL
+
+Optional:
+
+SUPERFLOW_CALLBACK_URL
+SUPERFLOW_CALLBACK_SECRET
+
+LYZR_TRANSCRIPT_URL_TEMPLATE
+
+LOG_LEVEL
+
+MOCK_EXTERNAL_SERVICES
+
+CALL_RATE_LIMIT_MAX
+CALL_RATE_LIMIT_WINDOW_MS
+
+AUDIO_PRECONNECT_BUFFER_MS
+
+LYZR_SESSION_TIMEOUT_MS
+
+TWILIO_CALL_TIMEOUT_SECONDS
+
+Fail startup clearly if required variables are missing.
+
+==================================================
+31. SUPERFLOW CALLBACK
+==================================================
+
+SuperFlow remains the business-orchestration layer.
+
+Implement optional:
+
+SUPERFLOW_CALLBACK_URL
+
+When a call reaches terminal status:
+
+completed
+busy
+no_answer
+failed
+canceled
+
+POST:
+
+{
+  "call_id": "...",
+  "twilio_call_sid": "...",
+  "status": "...",
+  "call_mode": "...",
+  "phone": "...",
+  "email": "...",
+  "lyzr_session_id": "...",
+  "reschedule_required": false,
+  "preferred_replacement_slot": null,
+  "completed_at": "..."
+}
+
+Authorization:
+
+Bearer ${SUPERFLOW_CALLBACK_SECRET}
+
+Use:
+
+timeout
+retry
+exponential backoff
+jitter
+
+Callback failure MUST NOT modify the actual call status.
+
+Persist callback attempts if practical.
+
+==================================================
+32. TRANSCRIPTS
+==================================================
+
+Create:
+
+TranscriptProvider
+
+First verify the current official Lyzr transcript API.
+
+If documented and accessible:
+
+implement transcript retrieval using:
+
+lyzr_session_id
+
+and LYZR_API_KEY as documented.
+
+Expose:
+
+GET /api/calls/:callId/transcript
+
+Potential response:
+
+{
+  "available": true,
+  "session_id": "...",
+  "transcript": "...",
+  "messages": [...]
+}
+
+If exact transcript API cannot be verified:
+
+DO NOT invent it.
+
+Support env override:
+
+LYZR_TRANSCRIPT_URL_TEMPLATE
+
+Template may contain:
+
+{sessionId}
+
+If no verified provider exists:
+
+return:
+
+{
+  "available": false,
+  "reason": "Transcript provider is not configured"
+}
+
+Do not make absence of transcript API prevent phone calling.
+
+==================================================
+33. POST-CALL SUMMARY
+==================================================
+
+Do NOT make this backend own CRM/email business logic unnecessarily.
+
+Preferred:
+
+call ends
+→ this service updates state
+→ callback SuperFlow
+→ SuperFlow fetches transcript
+→ SuperFlow LLM summarizes
+→ SuperFlow Gmail tool sends summary
+
+README must document this pattern.
+
+If transcript is available here:
+
+the callback may optionally include a transcript URL/path, but avoid sending extremely large transcripts in callback payloads.
+
+==================================================
+34. CALL OUTCOME DATA
+==================================================
+
+Create a normalized CallOutcome model:
+
+status
+
+meeting_booked_during_call optional
+meeting_confirmed optional
+reschedule_required optional
+preferred_replacement_slot optional
+prospect_not_interested optional
+do_not_call optional
+prospect_notes optional
+
+Only populate values that can be supported by actual transcript/tool metadata.
+
+Do NOT hallucinate outcomes.
+
+==================================================
+35. DO-NOT-CALL / CONSENT
+==================================================
+
+This system must be suitable for leads who have submitted a demo/contact request and are permitted to be called.
+
+Provide a configurable hook for suppression checks before dialing.
+
+Optional environment/config support:
+
+ENABLE_DNC_CHECK
+
+Do not attempt to build a global legal compliance engine.
+
+Document that production use must comply with applicable calling, consent, recording, disclosure, timezone and DNC laws.
+
+==================================================
+36. SECURITY
+==================================================
+
+Use:
+
+helmet
+
+appropriate CORS policy if any browser access exists
+
+rate limiting
+
+zod validation
+
+structured errors
+
+safe logging
+
+No secrets in frontend.
+
+No .env in git.
+
+Never log:
+
+LYZR_API_KEY
+TWILIO_AUTH_TOKEN
+SUPERFLOW_SHARED_SECRET
+SUPERFLOW_CALLBACK_SECRET
+
+Never log full Authorization headers.
+
+Avoid logging complete customer payloads in production.
+
+Mask phone/email in logs when practical.
+
+==================================================
+37. LOGGING
+==================================================
+
+Use pino.
+
+Every call-related log should include:
+
+callId
+
+and when known:
+
+twilioCallSid
+lyzrSessionId
+
+Events:
+
+call_request_received
+call_idempotent_replay
+lyzr_base_agent_loaded
+lyzr_call_agent_created
+lyzr_runtime_context_prepared
+calendar_tools_verified
+twilio_call_created
+twilio_status_updated
+twilio_ws_connected
+twilio_stream_started
+lyzr_session_created
+lyzr_ws_connected
+audio_bridge_started
+audio_bridge_stopped
+call_completed
+superflow_callback_sent
+bridge_error
+
+No secret values.
+
+==================================================
+38. ERROR HANDLING
+==================================================
+
+All external HTTP requests:
+
+AbortController timeout
+sanitized error
+status code handling
+response validation
+
+Retry only transient failures.
+
+Lyzr agent GET:
+retry transient failures.
+
+Lyzr agent create:
+retry only when safe.
+
+Lyzr session start:
+retry network/5xx before streaming begins.
+
+Twilio:
+use SDK error codes.
+
+WebSocket:
+handle error
+close
+unexpected response
+malformed messages
+heartbeat if useful
+
+If either side dies:
+
+close the other cleanly.
+
+Prevent double-close.
+
+Update call state.
+
+Do not crash the Node process.
+
+No unhandled promise rejections.
+
+==================================================
+39. TIMEOUTS
+==================================================
+
+Implement configurable:
+
+LYZR_SESSION_TIMEOUT_MS
+
+TWILIO_CALL_TIMEOUT_SECONDS
+
+AUDIO_PRECONNECT_BUFFER_MS
+
+Socket inactivity timeout.
+
+Do not leave dead calls/resources indefinitely.
+
+==================================================
+40. RESOURCE CLEANUP
+==================================================
+
+Always clean up:
+
+Twilio socket state
+Lyzr WebSocket
+audio buffers
+timers
+event listeners
+
+If per-call Lyzr agent clones are used:
+
+FIRST verify whether current Lyzr APIs provide a documented DELETE Voice Agent endpoint.
+
+If documented:
+
+optionally delete cloned agent after a configurable retention period.
+
+If NOT documented:
+
+do NOT invent/delete through unsupported means.
+
+Persist cloned agent ID so cleanup can be added later.
+
+Implement optional:
+
+CLONED_AGENT_RETENTION_HOURS
+
+but only activate automatic deletion if a verified API exists.
+
+==================================================
+41. PROJECT STRUCTURE
+==================================================
+
+Use Node.js 22 + TypeScript strict mode.
+
+Suggested:
+
+src/
+  app.ts
+  server.ts
+
+  config/
+    env.ts
+
+  routes/
+    health.ts
+    calls.ts
+    twilioStatus.ts
+
+  websocket/
+    twilioMedia.ts
+
+  lyzr/
+    client.ts
+    schemas.ts
+    contextStrategy.ts
+    protocolAdapter.ts
+    transcriptProvider.ts
+
+  twilio/
+    client.ts
+    twiml.ts
+    validation.ts
+    schemas.ts
+
+  audio/
+    mulaw.ts
+    resampler.ts
+    bridge.ts
+
+  calls/
+    service.ts
+    stateMachine.ts
+    types.ts
+
+  db/
+    client.ts
+    schema.ts
+    repository.ts
+
+  callback/
+    superflow.ts
+
+  utils/
+    errors.ts
+    logging.ts
+    retry.ts
+    timeout.ts
+
+tests/
+
+.env.example
+.gitignore
+package.json
+tsconfig.json
+vitest.config.ts
+Dockerfile
+README.md
+
+Use this as guidance, not a rigid restriction.
+
+==================================================
+42. FRAMEWORK
+==================================================
+
+Use either:
+
+Fastify + ws
+
+OR
+
+Express + ws
+
+Choose whichever produces the simplest reliable:
+
+HTTP + WebSocket
+
+single-process server.
+
+Do NOT use serverless functions.
+
+HTTP and WebSocket must run on the same Railway service.
+
+Bind:
+
+0.0.0.0
+
+Listen:
+
+process.env.PORT
+
+==================================================
+43. TESTING
+==================================================
+
+Use Vitest.
+
+Unit tests:
+
+env validation
+Lead schema
+E.164 validation
+call-mode validation
+booking payload
+confirmation payload
+dynamic-variable merge
+Lyzr config sanitization
+calendar-tool preservation
+call-state transitions
+idempotency
+Twilio TwiML generation
+Twilio event parsing
+Twilio webhook validation helpers
+μ-law encode
+μ-law decode
+roundtrip tolerance
+8k→24k resampling
+24k→8k resampling
+audio packet continuity
+Lyzr response validation
+protocol adapter behavior
+unknown Lyzr frame handling
+
+Mocked integration tests:
+
+POST /api/call booking
+POST /api/call confirmation
+
+Mock:
+Lyzr GET agent
+Lyzr agent creation/context strategy
+Twilio SDK
+
+Verify:
+
+Twilio is only called after Lyzr setup succeeds.
+
+Verify:
+
+required calendar tools exist.
+
+Duplicate Idempotency-Key:
+
+no second Twilio call.
+
+Missing calendar tools:
+
+fail.
+
+Lyzr creation failure:
+
+Twilio not called.
+
+Invalid phone:
+
+400.
+
+Unauthorized SuperFlow:
+
+401.
+
+Twilio callback:
+
+state changes.
+
+Terminal callback:
+
+SuperFlow callback dispatched.
+
+==================================================
+44. MOCK MODE
+==================================================
+
+Implement:
+
+MOCK_EXTERNAL_SERVICES=true
+
+Mock:
+
+Lyzr get agent
+Lyzr create agent
+Lyzr session
+Twilio call
+
+Allow:
+
+curl localhost/api/call
+
+to exercise the whole HTTP/state workflow without real calls.
+
+Never accidentally use mock mode in production unless explicitly set.
+
+Log clearly when mock mode is active.
+
+==================================================
+45. README
+==================================================
+
+Write a practical README.
+
+Include:
+
+A. Overview
+
+B. Architecture diagram
+
+C. What remains in SuperFlow
+
+D. What this Railway service handles
+
+E. Prerequisites
+
+F. Required environment variables
+
+G. How to rotate/use Lyzr API key safely
+
+H. Twilio setup
+
+I. Local install
+
+J. Database setup
+
+K. Mock test
+
+L. Real test call
+
+M. Railway deployment
+
+N. SuperFlow configuration
+
+O. Booking branch
+
+P. Confirmation branch
+
+Q. Transcript + summary workflow
+
+R. Troubleshooting
+
+S. Security/compliance notes
+
+T. Known external API assumptions
+
+==================================================
+46. EXACT SUPERFLOW BOOKING REQUEST
+==================================================
+
+For:
+
+meeting_found = false
+
+existing SuperFlow Code node:
+
+({
+  ...$json,
+  call_mode: "booking",
+  meeting_booked: false
+})
+
+HTTP Request:
+
+POST
+
+https://<RAILWAY_DOMAIN>/api/call
+
+Headers:
+
+Authorization:
+Bearer <SUPERFLOW_SHARED_SECRET>
+
+Content-Type:
+application/json
+
+Idempotency-Key:
+<unique form submission / lead execution ID>
+
+Body:
+
+{
+  "phone": "{{ $('Trigger').json.phone }}",
+  "first_name": "{{ $('Trigger').json.first_name }}",
+  "last_name": "{{ $('Trigger').json.last_name }}",
+  "email": "{{ $('Trigger').json.email }}",
+  "company": "{{ $('Trigger').json.company }}",
+  "use_case": "{{ $('Trigger').json.use_case }}",
+  "call_mode": "booking",
+  "timezone": "Asia/Kolkata",
+  "meeting_booked": false,
+  "meeting_id": null,
+  "meeting_start": null,
+  "meeting_end": null,
+  "meeting_link": null,
+  "meeting_owner": null
+}
+
+==================================================
+47. EXACT SUPERFLOW CONFIRMATION REQUEST
+==================================================
+
+For:
+
+meeting_found = true
+
+existing Code node:
+
+({
+  ...$json,
+  call_mode: "confirmation",
+  meeting_booked: true
+})
+
+HTTP Request:
+
+POST
+
+https://<RAILWAY_DOMAIN>/api/call
+
+Headers:
+
+Authorization:
+Bearer <SUPERFLOW_SHARED_SECRET>
+
+Content-Type:
+application/json
+
+Idempotency-Key:
+<unique lead/meeting execution ID>
+
+Body:
+
+{
+  "phone": "{{ $('Trigger').json.phone }}",
+  "first_name": "{{ $('Trigger').json.first_name }}",
+  "last_name": "{{ $('Trigger').json.last_name }}",
+  "email": "{{ $('Trigger').json.email }}",
+  "company": "{{ $('Trigger').json.company }}",
+  "use_case": "{{ $('Trigger').json.use_case }}",
+  "call_mode": "confirmation",
+  "timezone": "Asia/Kolkata",
+
+  "meeting_booked": true,
+  "meeting_id": "{{ $json.meeting_id }}",
+  "meeting_start": "{{ $json.meeting_start }}",
+  "meeting_end": "{{ $json.meeting_end }}",
+  "meeting_link": "{{ $json.meeting_link }}",
+  "meeting_owner": "{{ $json.meeting_owner }}"
+}
+
+==================================================
+48. PRODUCTION PRE-DIAL CHECK
+==================================================
+
+Before Twilio call creation verify:
+
+phone valid
+
+email valid
+
+call mode valid
+
+prepared Lyzr agent/context ready
+
+required calendar tools present
+
+PUBLIC_BASE_URL starts with:
+
+https://
+
+Twilio Stream URL becomes:
+
+wss://
+
+TWILIO_PHONE_NUMBER exists
+
+database record exists
+
+idempotency constraint satisfied
+
+Do not dial if any critical prerequisite fails.
+
+==================================================
+49. ACCEPTANCE CRITERIA
+==================================================
+
+The project is NOT DONE merely because it compiles.
+
+BOOKING scenario:
+
+1. Receive booking POST.
+2. Validate lead.
+3. Prepare lead-specific Lyzr context.
+4. Required calendar tools preserved.
+5. Queue outbound Twilio call.
+6. Phone rings.
+7. Prospect answers.
+8. Twilio starts Media Stream.
+9. Lyzr external session created.
+10. Lyzr WebSocket connects.
+11. Prospect speech reaches Lyzr correctly.
+12. Lyzr speech reaches prospect correctly.
+13. Audio is intelligible in both directions.
+14. Prospect can interrupt naturally.
+15. Voice Agent knows correct first name/company/use case.
+16. Agent finds real calendar availability.
+17. Agent offers actual slots.
+18. Agent creates meeting.
+19. Prospect email is invited.
+20. Event duration = 30 minutes.
+21. Agent confirms only after success.
+22. Twilio completion status persists.
+23. SuperFlow callback works.
+24. Transcript endpoint either works or clearly reports not configured.
+25. No process crash.
+
+CONFIRMATION scenario:
+
+1. Receive confirmation POST.
+2. Agent receives existing meeting details.
+3. Phone rings.
+4. Agent tells prospect correct meeting time.
+5. Prospect can confirm.
+6. Context/prep question captured where possible.
+7. If prospect requests another time:
+   - real alternatives may be found
+   - do NOT falsely claim rescheduling if update tool is absent
+   - reschedule_required is persisted
+8. Completion callback contains correct mode and status.
+
+==================================================
+50. COMMANDS TO RUN BEFORE FINISHING
+==================================================
+
+Run:
+
+npm install
+
+npm run typecheck
+
+npm test
+
+npm run lint
+
+npm run build
+
+Start mock service.
+
+Exercise:
+
+GET /health
+
+GET /ready
+
+POST /api/call
+
+booking mode
+
+POST /api/call
+
+confirmation mode
+
+duplicate Idempotency-Key
+
+unauthorized request
+
+Then fix every discovered error.
+
+No compilation errors.
+No failing tests.
+No lint errors.
+No TODOs in critical code.
+
+==================================================
+51. FINAL RESPONSE TO ME
+==================================================
+
+After implementation, show me:
+
+1. final file tree
+
+2. architecture actually implemented
+
+3. whether runtime dynamic variables or cloned agents were used, and WHY
+
+4. exact external API assumptions verified
+
+5. test results
+
+6. typecheck result
+
+7. build result
+
+8. exact environment variables I need to set
+
+9. exact Railway deployment steps
+
+10. exact SuperFlow booking HTTP node config
+
+11. exact SuperFlow confirmation HTTP node config
+
+12. one curl command for mock testing
+
+13. one curl command for a real controlled test call
+
+14. any ONE remaining external verification step, only if unavoidable
+
+Do not tell me simply:
+"implementation complete."
+
+Show concrete evidence.
+
+==================================================
+52. EXECUTE NOW
+==================================================
+
+Now execute the implementation.
+
+Proceed:
+
+1. inspect repository
+2. initialize project
+3. install dependencies
+4. implement env config
+5. implement persistence
+6. implement call models/state machine
+7. implement Lyzr client
+8. verify current official Lyzr APIs where possible
+9. implement dynamic-context strategy
+10. implement Twilio client
+11. implement TwiML generation
+12. implement μ-law codec
+13. implement resampler
+14. implement Lyzr WS protocol adapter
+15. implement audio bridge
+16. implement WebSocket route
+17. implement HTTP endpoints
+18. implement status callback
+19. implement SuperFlow callback
+20. implement transcript abstraction
+21. implement security
+22. implement tests
+23. typecheck
+24. test
+25. lint
+26. build
+27. mock end-to-end
+28. produce Railway configuration
+29. produce .env.example
+30. produce README
+31. report results
+
+Do not stop early.
