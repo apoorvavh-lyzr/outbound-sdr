@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { pino } from "pino";
-import { SuperflowCallback, buildCallbackPayload } from "../src/callback/superflow.js";
+import { SuperflowCallback, buildCallbackFields, buildCallbackPayload } from "../src/callback/superflow.js";
 import { parseEnv, type Env } from "../src/config/env.js";
 import { createDatabase, type Database } from "../src/db/client.js";
 import { CallRepository } from "../src/db/repository.js";
@@ -42,9 +42,9 @@ afterEach(async () => {
   await db.close();
 });
 
-describe("buildCallbackPayload", () => {
+describe("buildCallbackFields", () => {
   it("contains exactly the documented fields", () => {
-    expect(Object.keys(buildCallbackPayload(call)).sort()).toEqual([
+    expect(Object.keys(buildCallbackFields(call)).sort()).toEqual([
       "call_id", "call_mode", "company", "completed_at", "email", "first_name", "last_name",
       "lyzr_session_id", "phone", "preferred_replacement_slot", "reschedule_required", "status",
       "timezone", "twilio_call_sid", "use_case",
@@ -52,7 +52,7 @@ describe("buildCallbackPayload", () => {
   });
 
   it("reports the mode and status accurately", () => {
-    const payload = buildCallbackPayload(call);
+    const payload = buildCallbackFields(call);
     expect(payload.status).toBe("completed");
     expect(payload.call_mode).toBe("booking");
     expect(payload.reschedule_required).toBe(false);
@@ -60,6 +60,46 @@ describe("buildCallbackPayload", () => {
 
   it("never includes a transcript or secret", () => {
     expect(JSON.stringify(buildCallbackPayload(call))).not.toMatch(/secret|api_key|transcript/i);
+    expect(JSON.stringify(buildCallbackFields(call))).not.toMatch(/secret|api_key|transcript/i);
+  });
+});
+
+describe("workflow-execute shape", () => {
+  it("wraps the fields for the execute API when a workflow id is set", () => {
+    const payload = buildCallbackPayload(call, "wf-123") as Record<string, unknown>;
+    expect(payload.workflow_id).toBe("wf-123");
+    expect((payload.input as unknown[])[0]).toEqual(buildCallbackFields(call));
+  });
+
+  it("stays flat when no workflow id is set", () => {
+    expect(buildCallbackPayload(call)).toEqual(buildCallbackFields(call));
+  });
+
+  it("sends x-webhook-secret, not a bearer token, for the execute API", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const env = makeEnv({ SUPERFLOW_CALLBACK_WORKFLOW_ID: "wf-123" });
+    await new SuperflowCallback(env, repo, pino({ level: "silent" })).send(call);
+
+    const headers = (fetchMock.mock.calls[0]![1] as RequestInit).headers as Record<string, string>;
+    expect(headers["x-webhook-secret"]).toBe("callback-secret");
+    expect(headers.authorization).toBeUndefined();
+
+    const body = JSON.parse((fetchMock.mock.calls[0]![1] as RequestInit).body as string);
+    expect(body.workflow_id).toBe("wf-123");
+    expect(body.input[0].call_id).toBe(call.id);
+  });
+
+  it("keeps the bearer token for a plain webhook", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await new SuperflowCallback(makeEnv(), repo, pino({ level: "silent" })).send(call);
+
+    const headers = (fetchMock.mock.calls[0]![1] as RequestInit).headers as Record<string, string>;
+    expect(headers.authorization).toBe("Bearer callback-secret");
+    expect(headers["x-webhook-secret"]).toBeUndefined();
   });
 });
 

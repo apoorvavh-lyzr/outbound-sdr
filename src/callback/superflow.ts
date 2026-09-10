@@ -5,8 +5,8 @@ import { isTransientHttpError, retry } from "../utils/retry.js";
 import { withTimeout } from "../utils/timeout.js";
 import type { CallRecord } from "../calls/types.js";
 
-/** Payload posted to SuperFlow when a call reaches a terminal status. */
-export function buildCallbackPayload(call: CallRecord) {
+/** The call fields SuperFlow receives when a call reaches a terminal status. */
+export function buildCallbackFields(call: CallRecord) {
   return {
     // Always OUR internal call id - never the Twilio SID. SuperFlow calls
     // GET /api/calls/:callId/transcript with exactly this value.
@@ -26,6 +26,18 @@ export function buildCallbackPayload(call: CallRecord) {
     preferred_replacement_slot: call.preferred_replacement_slot,
     completed_at: call.completed_at,
   };
+}
+
+/**
+ * The body to POST.
+ *
+ * With a workflow id configured this targets the Lyzr workflow-execute API,
+ * which refuses a flat body ("failed to parse workflow: workflow has no
+ * nodes"). Without one it stays the plain flat webhook payload.
+ */
+export function buildCallbackPayload(call: CallRecord, workflowId?: string) {
+  const fields = buildCallbackFields(call);
+  return workflowId ? { workflow_id: workflowId, input: [fields] } : fields;
 }
 
 /**
@@ -62,7 +74,9 @@ export class SuperflowCallback {
     }
 
     const log = this.logger.child({ callId: call.id, twilioCallSid: call.twilio_call_sid });
-    const payload = buildCallbackPayload(call);
+    const workflowId = this.env.SUPERFLOW_CALLBACK_WORKFLOW_ID;
+    const secret = this.env.SUPERFLOW_CALLBACK_SECRET;
+    const payload = buildCallbackPayload(call, workflowId);
     let attemptNumber = 0;
     let deliveredStatus: number | null = null;
 
@@ -76,16 +90,22 @@ export class SuperflowCallback {
               signal,
               headers: {
                 "content-type": "application/json",
-                ...(this.env.SUPERFLOW_CALLBACK_SECRET
-                  ? { authorization: `Bearer ${this.env.SUPERFLOW_CALLBACK_SECRET}` }
+                // The execute API authenticates with x-webhook-secret; a plain
+                // webhook keeps the bearer token. Neither is ever logged.
+                ...(secret
+                  ? workflowId
+                    ? { "x-webhook-secret": secret }
+                    : { authorization: `Bearer ${secret}` }
                   : {}),
               },
               body: JSON.stringify(payload),
             });
             if (!response.ok) {
-              const error = new Error(`SuperFlow callback returned HTTP ${response.status}`) as Error & {
-                statusCode: number;
-              };
+              // The body is the only clue to WHY it was refused.
+              const body = (await response.text().catch(() => "")).slice(0, 500);
+              const error = new Error(
+                `SuperFlow callback returned HTTP ${response.status}: ${body}`,
+              ) as Error & { statusCode: number };
               error.statusCode = response.status;
               throw error;
             }

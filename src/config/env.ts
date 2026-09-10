@@ -44,6 +44,12 @@ export const envSchema = z
     SUPERFLOW_SHARED_SECRET: optionalStr,
     SUPERFLOW_CALLBACK_URL: optionalStr,
     SUPERFLOW_CALLBACK_SECRET: optionalStr,
+    /**
+     * Set when SUPERFLOW_CALLBACK_URL is the Lyzr workflow-execute API rather
+     * than a plain webhook. Its presence switches the callback to that API's
+     * shape: x-webhook-secret plus {workflow_id, input:[...]}.
+     */
+    SUPERFLOW_CALLBACK_WORKFLOW_ID: optionalStr,
     /** Intake webhook the demo form forwards leads to. Never sent to the browser. */
     SUPERFLOW_INTAKE_WEBHOOK_URL: optionalStr,
     /** Sent as the x-webhook-secret header; the execute API rejects the call without it. */
