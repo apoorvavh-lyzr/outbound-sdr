@@ -1,5 +1,5 @@
 import { createRequire } from "node:module";
-import { POSTGRES_DDL, SQLITE_DDL } from "./schema.js";
+import { POSTGRES_ALTERS, POSTGRES_DDL, SQLITE_ALTERS, SQLITE_DDL } from "./schema.js";
 
 /**
  * Minimal database abstraction over the two drivers we support:
@@ -87,6 +87,9 @@ class PostgresDatabase implements Database {
   async migrate(): Promise<void> {
     const pool = await this.getPool();
     await pool.query(POSTGRES_DDL);
+    for (const alter of POSTGRES_ALTERS) {
+      await pool.query(alter);
+    }
   }
 
   async ping(): Promise<void> {
@@ -140,7 +143,15 @@ class SqliteDatabase implements Database {
   }
 
   async migrate(): Promise<void> {
-    (await this.getHandle()).exec(SQLITE_DDL);
+    const handle = await this.getHandle();
+    handle.exec(SQLITE_DDL);
+    for (const alter of SQLITE_ALTERS) {
+      try {
+        handle.exec(alter);
+      } catch {
+        // Column already present - the table was created by the current DDL.
+      }
+    }
   }
 
   async ping(): Promise<void> {

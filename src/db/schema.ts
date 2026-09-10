@@ -44,6 +44,7 @@ CREATE TABLE IF NOT EXISTS calls (
   updated_at                TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   answered_at               TIMESTAMPTZ,
   completed_at              TIMESTAMPTZ,
+  post_call_callback_sent_at TIMESTAMPTZ,
 
   raw_twilio_status         JSONB,
   metadata                  JSONB
@@ -107,6 +108,7 @@ CREATE TABLE IF NOT EXISTS calls (
   updated_at                TEXT NOT NULL,
   answered_at               TEXT,
   completed_at              TEXT,
+  post_call_callback_sent_at TEXT,
 
   raw_twilio_status         TEXT,
   metadata                  TEXT
@@ -129,6 +131,20 @@ CREATE INDEX IF NOT EXISTS callback_attempts_call_id_idx ON callback_attempts (c
 `;
 
 /** Column order shared by both drivers for INSERT. */
+/**
+ * Additive migrations for databases created before a column existed. The DDL
+ * above only runs CREATE TABLE IF NOT EXISTS, so an existing Railway database
+ * never picks up a new column without these.
+ */
+export const POSTGRES_ALTERS = [
+  "ALTER TABLE calls ADD COLUMN IF NOT EXISTS post_call_callback_sent_at TIMESTAMPTZ",
+];
+
+/** SQLite has no IF NOT EXISTS for ADD COLUMN; a duplicate-column error is expected and ignored. */
+export const SQLITE_ALTERS = [
+  "ALTER TABLE calls ADD COLUMN post_call_callback_sent_at TEXT",
+];
+
 export const CALL_COLUMNS = [
   "id",
   "idempotency_key",
@@ -161,6 +177,7 @@ export const CALL_COLUMNS = [
   "updated_at",
   "answered_at",
   "completed_at",
+  "post_call_callback_sent_at",
   "raw_twilio_status",
   "metadata",
 ] as const;

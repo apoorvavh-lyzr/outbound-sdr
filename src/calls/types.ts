@@ -148,6 +148,8 @@ export interface CallRecord {
   updated_at: string;
   answered_at: string | null;
   completed_at: string | null;
+  /** Set once the post-call SuperFlow callback has been claimed, so it fires at most once. */
+  post_call_callback_sent_at: string | null;
 
   raw_twilio_status: unknown | null;
   metadata: Record<string, unknown> | null;

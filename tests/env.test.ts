@@ -12,6 +12,7 @@ const productionBase = {
   TWILIO_AUTH_TOKEN: "tok",
   TWILIO_PHONE_NUMBER: "+16263133414",
   SUPERFLOW_SHARED_SECRET: "secret",
+  SUPERFLOW_INTAKE_WEBHOOK_URL: "https://superflow.example.com/intake",
   DATABASE_URL: "postgres://user:pass@host:5432/db",
 };
 

@@ -8,12 +8,19 @@ import type { CallRecord } from "../calls/types.js";
 /** Payload posted to SuperFlow when a call reaches a terminal status. */
 export function buildCallbackPayload(call: CallRecord) {
   return {
+    // Always OUR internal call id - never the Twilio SID. SuperFlow calls
+    // GET /api/calls/:callId/transcript with exactly this value.
     call_id: call.id,
     twilio_call_sid: call.twilio_call_sid,
     status: call.status,
-    call_mode: call.call_mode,
-    phone: call.phone,
+    first_name: call.first_name,
+    last_name: call.last_name,
     email: call.email,
+    phone: call.phone,
+    company: call.company,
+    use_case: call.use_case,
+    call_mode: call.call_mode,
+    timezone: call.timezone,
     lyzr_session_id: call.lyzr_session_id,
     reschedule_required: call.reschedule_required,
     preferred_replacement_slot: call.preferred_replacement_slot,
@@ -44,12 +51,23 @@ export class SuperflowCallback {
     const url = this.env.SUPERFLOW_CALLBACK_URL;
     if (!url) return false;
 
-    const log = this.logger.child({ callId: call.id });
+    // At-most-once: the first terminal webhook wins the claim, repeats get
+    // false and return without sending, so SuperFlow never emails twice.
+    if (!(await this.repository.claimPostCallCallback(call.id))) {
+      this.logger.info(
+        { event: "superflow_callback_skipped_duplicate", callId: call.id, twilioCallSid: call.twilio_call_sid },
+        "post-call callback already sent for this call",
+      );
+      return false;
+    }
+
+    const log = this.logger.child({ callId: call.id, twilioCallSid: call.twilio_call_sid });
     const payload = buildCallbackPayload(call);
     let attemptNumber = 0;
+    let deliveredStatus: number | null = null;
 
     try {
-      await retry(
+      deliveredStatus = await retry(
         async (attempt) => {
           attemptNumber = attempt;
           const status = await withTimeout(10_000, "superflow callback", async (signal) => {
@@ -87,7 +105,10 @@ export class SuperflowCallback {
         },
       );
 
-      log.info({ event: "superflow_callback_sent", status: call.status }, "callback delivered");
+      log.info(
+        { event: "superflow_callback_sent", status: call.status, httpStatus: deliveredStatus, ok: true },
+        "callback delivered",
+      );
       return true;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -98,7 +119,10 @@ export class SuperflowCallback {
         .catch(() => undefined);
 
       // Deliberately swallowed: call state is authoritative and stays as-is.
-      log.error({ event: "superflow_callback_failed", err: message }, "callback delivery failed");
+      log.error(
+        { event: "superflow_callback_failed", httpStatus: statusCode, ok: false, err: message },
+        "callback delivery failed",
+      );
       return false;
     }
   }

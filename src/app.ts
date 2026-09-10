@@ -16,6 +16,7 @@ import { MockTwilioClient, RealTwilioClient, type TwilioCallClient } from "./twi
 import { SuperflowCallback } from "./callback/superflow.js";
 import { registerCallRoutes } from "./routes/calls.js";
 import { registerHealthRoutes } from "./routes/health.js";
+import { registerLeadRoutes } from "./routes/lead.js";
 import { registerTwilioStatusRoute } from "./routes/twilioStatus.js";
 import { AppError, toAppError } from "./utils/errors.js";
 import { getLogger } from "./utils/logging.js";
@@ -126,6 +127,7 @@ export async function buildApp(options: BuildAppOptions): Promise<BuiltApp> {
   );
 
   registerHealthRoutes(app, env, db);
+  registerLeadRoutes(app, { env });
   registerCallRoutes(app, { env, service, transcripts: createTranscriptProvider(env) });
   registerTwilioStatusRoute(app, env, service);
 

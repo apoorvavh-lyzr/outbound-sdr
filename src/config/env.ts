@@ -44,6 +44,8 @@ export const envSchema = z
     SUPERFLOW_SHARED_SECRET: optionalStr,
     SUPERFLOW_CALLBACK_URL: optionalStr,
     SUPERFLOW_CALLBACK_SECRET: optionalStr,
+    /** Intake webhook the demo form forwards leads to. Never sent to the browser. */
+    SUPERFLOW_INTAKE_WEBHOOK_URL: optionalStr,
 
     DATABASE_URL: optionalStr,
 
@@ -82,6 +84,10 @@ export const envSchema = z
       need("TWILIO_AUTH_TOKEN", env.TWILIO_AUTH_TOKEN);
       need("TWILIO_PHONE_NUMBER", env.TWILIO_PHONE_NUMBER);
       need("SUPERFLOW_SHARED_SECRET", env.SUPERFLOW_SHARED_SECRET);
+    }
+
+    if (env.NODE_ENV === "production") {
+      need("SUPERFLOW_INTAKE_WEBHOOK_URL", env.SUPERFLOW_INTAKE_WEBHOOK_URL);
     }
 
     if (env.NODE_ENV === "production" && env.DEBUG_AUDIO_DIR) {
@@ -126,6 +132,14 @@ export const envSchema = z
         code: z.ZodIssueCode.custom,
         path: ["SUPERFLOW_CALLBACK_URL"],
         message: "SUPERFLOW_CALLBACK_URL must be an absolute http(s) URL",
+      });
+    }
+
+    if (env.SUPERFLOW_INTAKE_WEBHOOK_URL && !/^https?:\/\//.test(env.SUPERFLOW_INTAKE_WEBHOOK_URL)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["SUPERFLOW_INTAKE_WEBHOOK_URL"],
+        message: "SUPERFLOW_INTAKE_WEBHOOK_URL must be an absolute http(s) URL",
       });
     }
   });

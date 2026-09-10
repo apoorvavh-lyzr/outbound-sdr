@@ -71,6 +71,7 @@ function hydrate(row: Record<string, unknown>): CallRecord {
     updated_at: toIso(row.updated_at) ?? nowIso(),
     answered_at: toIso(row.answered_at),
     completed_at: toIso(row.completed_at),
+    post_call_callback_sent_at: toIso(row.post_call_callback_sent_at),
 
     raw_twilio_status: json(row.raw_twilio_status),
     metadata: json(row.metadata) as Record<string, unknown> | null,
@@ -128,6 +129,7 @@ export class CallRepository {
       updated_at: timestamp,
       answered_at: null,
       completed_at: null,
+      post_call_callback_sent_at: null,
       raw_twilio_status: null,
       metadata: null,
     };
@@ -176,6 +178,23 @@ export class CallRepository {
     const updated = await this.findById(id);
     if (!updated) throw new Error(`Call ${id} disappeared during update`);
     return updated;
+  }
+
+  /**
+   * Atomically claims the one-and-only post-call callback for a call.
+   *
+   * Returns true for the caller that won the claim and false for every
+   * subsequent one, so a repeated Twilio "completed" webhook cannot produce a
+   * second SuperFlow callback (and therefore a second email).
+   */
+  async claimPostCallCallback(id: string): Promise<boolean> {
+    const rows = await this.db.query(
+      `UPDATE calls SET post_call_callback_sent_at = ?, updated_at = ?
+       WHERE id = ? AND post_call_callback_sent_at IS NULL
+       RETURNING id`,
+      [nowIso(), nowIso(), id],
+    );
+    return rows.length > 0;
   }
 
   async recordCallbackAttempt(

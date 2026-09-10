@@ -45,8 +45,9 @@ afterEach(async () => {
 describe("buildCallbackPayload", () => {
   it("contains exactly the documented fields", () => {
     expect(Object.keys(buildCallbackPayload(call)).sort()).toEqual([
-      "call_id", "call_mode", "completed_at", "email", "lyzr_session_id",
-      "phone", "preferred_replacement_slot", "reschedule_required", "status", "twilio_call_sid",
+      "call_id", "call_mode", "company", "completed_at", "email", "first_name", "last_name",
+      "lyzr_session_id", "phone", "preferred_replacement_slot", "reschedule_required", "status",
+      "timezone", "twilio_call_sid", "use_case",
     ]);
   });
 
@@ -135,5 +136,30 @@ describe("SuperflowCallback", () => {
 
     await new SuperflowCallback(makeEnv({ SUPERFLOW_CALLBACK_SECRET: "" }), repo, pino({ level: "silent" })).send(call);
     expect((fetchMock.mock.calls[0]![1].headers as Record<string, string>).authorization).toBeUndefined();
+  });
+
+  it("sends only once even when Twilio repeats the completed webhook", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const callback = new SuperflowCallback(makeEnv(), repo, pino({ level: "silent" }));
+
+    expect(await callback.send(call)).toBe(true);
+    expect(await callback.send(call)).toBe(false);
+    expect(await callback.send(call)).toBe(false);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect((await repo.findById(call.id))!.post_call_callback_sent_at).not.toBeNull();
+  });
+
+  it("posts the internal call id, not the Twilio SID", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await new SuperflowCallback(makeEnv(), repo, pino({ level: "silent" })).send(call);
+
+    const body = JSON.parse((fetchMock.mock.calls[0]![1] as RequestInit).body as string);
+    expect(body.call_id).toBe(call.id);
+    expect(body.call_id).not.toBe("CA1");
+    expect(body.lyzr_session_id).toBe("sess1");
   });
 });
