@@ -5,13 +5,18 @@ import { isTransientHttpError, retry } from "../utils/retry.js";
 import { withTimeout } from "../utils/timeout.js";
 import type { CallRecord } from "../calls/types.js";
 
-/** The call fields SuperFlow receives when a call reaches a terminal status. */
+/**
+ * The call fields SuperFlow receives when a call reaches a terminal status.
+ *
+ * Exactly the eleven documented fields, no more: the workflow's input schema
+ * rejects the whole payload with a 400 when it carries a field it does not
+ * declare. Anything added here must be added to that schema first.
+ */
 export function buildCallbackFields(call: CallRecord) {
   return {
     // Always OUR internal call id - never the Twilio SID. SuperFlow calls
     // GET /api/calls/:callId/transcript with exactly this value.
     call_id: call.id,
-    twilio_call_sid: call.twilio_call_sid,
     status: call.status,
     first_name: call.first_name,
     last_name: call.last_name,
@@ -21,10 +26,8 @@ export function buildCallbackFields(call: CallRecord) {
     use_case: call.use_case,
     call_mode: call.call_mode,
     timezone: call.timezone,
+    // The key to the transcript endpoint.
     lyzr_session_id: call.lyzr_session_id,
-    reschedule_required: call.reschedule_required,
-    preferred_replacement_slot: call.preferred_replacement_slot,
-    completed_at: call.completed_at,
   };
 }
 

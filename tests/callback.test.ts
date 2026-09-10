@@ -45,9 +45,8 @@ afterEach(async () => {
 describe("buildCallbackFields", () => {
   it("contains exactly the documented fields", () => {
     expect(Object.keys(buildCallbackFields(call)).sort()).toEqual([
-      "call_id", "call_mode", "company", "completed_at", "email", "first_name", "last_name",
-      "lyzr_session_id", "phone", "preferred_replacement_slot", "reschedule_required", "status",
-      "timezone", "twilio_call_sid", "use_case",
+      "call_id", "call_mode", "company", "email", "first_name", "last_name",
+      "lyzr_session_id", "phone", "status", "timezone", "use_case",
     ]);
   });
 
@@ -55,7 +54,7 @@ describe("buildCallbackFields", () => {
     const payload = buildCallbackFields(call);
     expect(payload.status).toBe("completed");
     expect(payload.call_mode).toBe("booking");
-    expect(payload.reschedule_required).toBe(false);
+    expect(payload.lyzr_session_id).toBe("sess1");
   });
 
   it("never includes a transcript or secret", () => {
