@@ -117,7 +117,8 @@ describe("GET /health and /ready", () => {
   it("reports service health", async () => {
     const res = await app.inject({ method: "GET", url: "/health" });
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({ ok: true, service: "lyzr-outbound-voice" });
+    expect(res.json()).toMatchObject({ ok: true, service: "lyzr-outbound-voice" });
+    expect(res.json().commit).toBeTypeOf("string");
   });
 
   it("reports readiness including a real database check", async () => {

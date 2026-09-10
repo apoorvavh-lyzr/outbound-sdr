@@ -3,7 +3,12 @@ import type { Database } from "../db/client.js";
 import type { Env } from "../config/env.js";
 
 export function registerHealthRoutes(app: FastifyInstance, env: Env, db: Database): void {
-  app.get("/health", async () => ({ ok: true, service: "lyzr-outbound-voice" }));
+  // Railway injects RAILWAY_GIT_COMMIT_SHA at build time. Surfacing it makes
+  // "is my push actually live?" answerable with one request instead of
+  // inferring it from which routes happen to 404.
+  const commit = process.env.RAILWAY_GIT_COMMIT_SHA?.slice(0, 7) ?? "unknown";
+
+  app.get("/health", async () => ({ ok: true, service: "lyzr-outbound-voice", commit }));
 
   /**
    * Readiness: configuration plus a real database round-trip.
