@@ -172,7 +172,6 @@ describe("POST /api/lead forwarding", () => {
     expect(forwarded).toEqual({
       submission_id: res.json().submission_id,
       first_name: "Apoorva",
-      last_name: "VH",
       email: "vhapoorva@gmail.com",
       phone: "+919876543210",
       company: "Lyzr",
@@ -190,7 +189,19 @@ describe("POST /api/lead forwarding", () => {
 
     const forwarded = JSON.parse((fetchMock.mock.calls[0]![1] as RequestInit).body as string);
     expect(forwarded.timezone).toBe("Asia/Kolkata");
-    expect(forwarded.last_name).toBe("VH");
+  });
+
+  it("omits last_name, which the intake schema does not declare", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await postLead(validLead);
+
+    const forwarded = JSON.parse((fetchMock.mock.calls[0]![1] as RequestInit).body as string);
+    expect(forwarded).not.toHaveProperty("last_name");
+    expect(Object.keys(forwarded).sort()).toEqual([
+      "company", "email", "first_name", "phone", "submission_id", "timezone", "use_case",
+    ]);
   });
 
   it("gives each submission its own server-generated id", async () => {

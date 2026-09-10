@@ -38,12 +38,18 @@ export const intakeLeadSchema = z.object({
 
 export type IntakeLead = z.infer<typeof intakeLeadSchema>;
 
-/** Exactly the JSON forwarded to the SuperFlow intake webhook. */
+/**
+ * Exactly the JSON forwarded to the SuperFlow intake webhook.
+ *
+ * Mirrors the intake trigger's input schema field for field. `last_name` is
+ * deliberately absent: the form still collects it, but the trigger declares no
+ * such field and rejects the payload with a 400 when it is present. Add it back
+ * here the moment the schema gains a last_name field.
+ */
 export function buildIntakePayload(lead: IntakeLead, submissionId: string) {
   return {
     submission_id: submissionId,
     first_name: lead.first_name,
-    last_name: lead.last_name,
     email: lead.email,
     phone: lead.phone,
     company: lead.company,
