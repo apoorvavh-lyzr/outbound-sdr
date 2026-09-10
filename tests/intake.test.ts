@@ -293,7 +293,9 @@ describe("POST /api/lead forwarding", () => {
 });
 
 describe("environment", () => {
-  it("requires SUPERFLOW_INTAKE_WEBHOOK_URL in production", () => {
+  it("BOOTS in production without the intake variables", () => {
+    // They configure the demo form only. The outbound calling service must
+    // never fail to start because a lead-form variable is missing.
     expect(() =>
       parseEnv({
         NODE_ENV: "production",
@@ -306,24 +308,26 @@ describe("environment", () => {
         TWILIO_PHONE_NUMBER: "+1",
         SUPERFLOW_SHARED_SECRET: "s",
       } as NodeJS.ProcessEnv),
-    ).toThrow(/SUPERFLOW_INTAKE_WEBHOOK_URL/);
+    ).not.toThrow();
   });
 
-  it("requires the intake secret and workflow id in production", () => {
-    expect(() =>
-      parseEnv({
-        NODE_ENV: "production",
-        PUBLIC_BASE_URL: "https://voice.example.com",
-        DATABASE_URL: "postgres://localhost/db",
-        LYZR_API_KEY: "k",
-        LYZR_BASE_AGENT_ID: "a",
-        TWILIO_ACCOUNT_SID: "AC1",
-        TWILIO_AUTH_TOKEN: "t",
-        TWILIO_PHONE_NUMBER: "+1",
-        SUPERFLOW_SHARED_SECRET: "s",
-        SUPERFLOW_INTAKE_WEBHOOK_URL: INTAKE_URL,
-      } as NodeJS.ProcessEnv),
-    ).toThrow(/SUPERFLOW_INTAKE_WORKFLOW_ID/);
+  it("answers 503 on /api/lead when intake is unconfigured, without dying", async () => {
+    await app.close();
+    await db.close();
+    db = createDatabase(undefined);
+    const built = await buildApp({
+      env: makeEnv({ SUPERFLOW_INTAKE_WORKFLOW_ID: "" }),
+      database: db,
+      strategy: new StubStrategy(),
+      twilioClient: new NeverDialsTwilio(),
+      logger: pino({ level: "silent" }),
+    });
+    app = built.app;
+    await app.ready();
+
+    expect((await postLead(validLead)).statusCode).toBe(503);
+    // The rest of the service is unaffected.
+    expect((await app.inject({ method: "GET", url: "/health" })).statusCode).toBe(200);
   });
 
   it("rejects a non-absolute intake URL", () => {

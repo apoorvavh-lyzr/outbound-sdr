@@ -90,11 +90,9 @@ export const envSchema = z
       need("SUPERFLOW_SHARED_SECRET", env.SUPERFLOW_SHARED_SECRET);
     }
 
-    if (env.NODE_ENV === "production") {
-      need("SUPERFLOW_INTAKE_WEBHOOK_URL", env.SUPERFLOW_INTAKE_WEBHOOK_URL);
-      need("SUPERFLOW_INTAKE_WEBHOOK_SECRET", env.SUPERFLOW_INTAKE_WEBHOOK_SECRET);
-      need("SUPERFLOW_INTAKE_WORKFLOW_ID", env.SUPERFLOW_INTAKE_WORKFLOW_ID);
-    }
+    // The intake variables are deliberately NOT boot-blocking. They configure
+    // the demo form only; the outbound calling service must never fail to start
+    // because a lead-form variable is missing. /api/lead answers 503 instead.
 
     if (env.NODE_ENV === "production" && env.DEBUG_AUDIO_DIR) {
       ctx.addIssue({

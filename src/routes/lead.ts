@@ -102,7 +102,11 @@ export function registerLeadRoutes(app: FastifyInstance, deps: LeadRoutesDeps): 
           { event: "lead_intake_not_configured" },
           "SUPERFLOW_INTAKE_WEBHOOK_URL / SUPERFLOW_INTAKE_WORKFLOW_ID are not configured",
         );
-        throw new UpstreamError("intake_not_configured", "Lead intake is not configured");
+        throw new UpstreamError(
+          "intake_not_configured",
+          "Lead intake is not configured",
+          503,
+        );
       }
 
       // Server-side id: the browser never supplies it, so a double submission
