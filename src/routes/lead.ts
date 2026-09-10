@@ -97,16 +97,20 @@ export function registerLeadRoutes(app: FastifyInstance, deps: LeadRoutesDeps): 
       });
 
       let status: number;
+      let responseBody = "";
       try {
-        status = await withTimeout(10_000, "superflow intake", async (signal) => {
+        ({ status, responseBody } = await withTimeout(10_000, "superflow intake", async (signal) => {
           const response = await fetch(webhookUrl, {
             method: "POST",
             signal,
             headers: { "content-type": "application/json" },
             body: JSON.stringify(buildIntakePayload(parsed.data, submissionId)),
           });
-          return response.status;
-        });
+          // Read the body only on rejection, and cap it: it is the only clue
+          // to WHY intake refused the lead, but it is third-party text.
+          const responseBody = response.ok ? "" : (await response.text().catch(() => "")).slice(0, 500);
+          return { status: response.status, responseBody };
+        }));
       } catch (err) {
         // The URL itself is never logged: it is a secret-bearing endpoint.
         log.error(
@@ -117,7 +121,10 @@ export function registerLeadRoutes(app: FastifyInstance, deps: LeadRoutesDeps): 
       }
 
       if (status < 200 || status >= 300) {
-        log.error({ event: "lead_intake_rejected", httpStatus: status }, "lead intake returned an error");
+        log.error(
+          { event: "lead_intake_rejected", httpStatus: status, intakeResponse: responseBody },
+          "lead intake returned an error",
+        );
         throw new UpstreamError("intake_failed", "Could not submit your details. Please try again.");
       }
 

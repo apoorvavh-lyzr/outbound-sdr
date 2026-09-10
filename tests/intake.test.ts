@@ -220,6 +220,34 @@ describe("POST /api/lead forwarding", () => {
     expect(JSON.stringify(res.json())).not.toContain(INTAKE_URL);
   });
 
+  it("logs the intake response body when it rejects the lead", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(new Response('{"error":"missing field xyz"}', { status: 400 })),
+    );
+
+    const lines: Array<Record<string, unknown>> = [];
+    await app.close();
+    await db.close();
+    db = createDatabase(undefined);
+    const built = await buildApp({
+      env: makeEnv(),
+      database: db,
+      strategy: new StubStrategy(),
+      twilioClient: new NeverDialsTwilio(),
+      logger: pino({ level: "error" }, { write: (l) => lines.push(JSON.parse(l)) }),
+    });
+    app = built.app;
+    await app.ready();
+
+    expect((await postLead(validLead)).statusCode).toBe(502);
+
+    const rejected = lines.find((l) => l.event === "lead_intake_rejected");
+    expect(rejected).toBeTruthy();
+    expect(rejected!.httpStatus).toBe(400);
+    expect(rejected!.intakeResponse).toContain("missing field xyz");
+  });
+
   it("returns 502 when the intake webhook is unreachable", async () => {
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("network down")));
 
