@@ -13,6 +13,8 @@ const productionBase = {
   TWILIO_PHONE_NUMBER: "+16263133414",
   SUPERFLOW_SHARED_SECRET: "secret",
   SUPERFLOW_INTAKE_WEBHOOK_URL: "https://superflow.example.com/intake",
+  SUPERFLOW_INTAKE_WEBHOOK_SECRET: "intake-secret",
+  SUPERFLOW_INTAKE_WORKFLOW_ID: "667750cd-b2df-4f00-8aa9-a16d0a2f3004",
   DATABASE_URL: "postgres://user:pass@host:5432/db",
 };
 

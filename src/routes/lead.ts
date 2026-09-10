@@ -39,14 +39,11 @@ export const intakeLeadSchema = z.object({
 export type IntakeLead = z.infer<typeof intakeLeadSchema>;
 
 /**
- * Exactly the JSON forwarded to the SuperFlow intake webhook.
- *
- * Mirrors the intake trigger's input schema field for field. `last_name` is
- * deliberately absent: the form still collects it, but the trigger declares no
- * such field and rejects the payload with a 400 when it is present. Add it back
- * here the moment the schema gains a last_name field.
+ * The lead fields, matching the workflow's declared input schema field for
+ * field. `last_name` is deliberately absent: the form still collects it, but
+ * the schema declares no such field. Add it back once the schema does.
  */
-export function buildIntakePayload(lead: IntakeLead, submissionId: string) {
+export function buildIntakeFields(lead: IntakeLead, submissionId: string) {
   return {
     submission_id: submissionId,
     first_name: lead.first_name,
@@ -55,6 +52,20 @@ export function buildIntakePayload(lead: IntakeLead, submissionId: string) {
     company: lead.company,
     use_case: lead.use_case,
     timezone: lead.timezone,
+  };
+}
+
+/**
+ * The body the Lyzr workflow-execute API expects.
+ *
+ * It is NOT a plain lead webhook: posting the lead fields at the top level is
+ * refused with "failed to parse workflow: workflow has no nodes". The fields
+ * have to travel inside `input`, addressed to a specific `workflow_id`.
+ */
+export function buildIntakePayload(lead: IntakeLead, submissionId: string, workflowId: string) {
+  return {
+    workflow_id: workflowId,
+    input: [buildIntakeFields(lead, submissionId)],
   };
 }
 
@@ -84,11 +95,12 @@ export function registerLeadRoutes(app: FastifyInstance, deps: LeadRoutesDeps): 
       }
 
       const webhookUrl = env.SUPERFLOW_INTAKE_WEBHOOK_URL;
-      if (!webhookUrl) {
+      const workflowId = env.SUPERFLOW_INTAKE_WORKFLOW_ID;
+      if (!webhookUrl || !workflowId) {
         // Production cannot reach here - env validation requires the URL.
         request.log.error(
           { event: "lead_intake_not_configured" },
-          "SUPERFLOW_INTAKE_WEBHOOK_URL is not configured",
+          "SUPERFLOW_INTAKE_WEBHOOK_URL / SUPERFLOW_INTAKE_WORKFLOW_ID are not configured",
         );
         throw new UpstreamError("intake_not_configured", "Lead intake is not configured");
       }
@@ -109,8 +121,14 @@ export function registerLeadRoutes(app: FastifyInstance, deps: LeadRoutesDeps): 
           const response = await fetch(webhookUrl, {
             method: "POST",
             signal,
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify(buildIntakePayload(parsed.data, submissionId)),
+            headers: {
+              "content-type": "application/json",
+              // Identifies the caller to the execute API. Never logged.
+              ...(env.SUPERFLOW_INTAKE_WEBHOOK_SECRET
+                ? { "x-webhook-secret": env.SUPERFLOW_INTAKE_WEBHOOK_SECRET }
+                : {}),
+            },
+            body: JSON.stringify(buildIntakePayload(parsed.data, submissionId, workflowId)),
           });
           // Read the body only on rejection, and cap it: it is the only clue
           // to WHY intake refused the lead, but it is third-party text.

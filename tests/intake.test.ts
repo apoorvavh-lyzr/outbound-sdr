@@ -9,6 +9,8 @@ import type { CreateCallInput, TwilioCallClient } from "../src/twilio/client.js"
 import type { Lead } from "../src/calls/types.js";
 
 const INTAKE_URL = "https://superflow.example.com/intake";
+const INTAKE_SECRET = "intake-webhook-secret";
+const WORKFLOW_ID = "667750cd-b2df-4f00-8aa9-a16d0a2f3004";
 
 const validLead = {
   first_name: "Apoorva",
@@ -51,6 +53,8 @@ function makeEnv(overrides: Record<string, string> = {}): Env {
     TWILIO_PHONE_NUMBER: "+16263133414",
     SUPERFLOW_SHARED_SECRET: "superflow-shared-secret",
     SUPERFLOW_INTAKE_WEBHOOK_URL: INTAKE_URL,
+    SUPERFLOW_INTAKE_WEBHOOK_SECRET: INTAKE_SECRET,
+    SUPERFLOW_INTAKE_WORKFLOW_ID: WORKFLOW_ID,
     ...overrides,
   } as NodeJS.ProcessEnv);
 }
@@ -166,18 +170,32 @@ describe("POST /api/lead forwarding", () => {
     const [url, init] = fetchMock.mock.calls[0]! as [string, RequestInit];
     expect(url).toBe(INTAKE_URL);
     expect(init.method).toBe("POST");
-    expect((init.headers as Record<string, string>)["content-type"]).toBe("application/json");
+    const headers = init.headers as Record<string, string>;
+    expect(headers["content-type"]).toBe("application/json");
+    expect(headers["x-webhook-secret"]).toBe(INTAKE_SECRET);
 
     const forwarded = JSON.parse(init.body as string);
     expect(forwarded).toEqual({
-      submission_id: res.json().submission_id,
-      first_name: "Apoorva",
-      email: "vhapoorva@gmail.com",
-      phone: "+919876543210",
-      company: "Lyzr",
-      use_case: "I want an AI SDR",
-      timezone: "Asia/Kolkata",
+      workflow_id: WORKFLOW_ID,
+      input: [
+        {
+          submission_id: res.json().submission_id,
+          first_name: "Apoorva",
+          email: "vhapoorva@gmail.com",
+          phone: "+919876543210",
+          company: "Lyzr",
+          use_case: "I want an AI SDR",
+          timezone: "Asia/Kolkata",
+        },
+      ],
     });
+  });
+
+  it("never puts the webhook secret in the response or the page", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(null, { status: 200 })));
+    const res = await postLead(validLead);
+    expect(JSON.stringify(res.json())).not.toContain(INTAKE_SECRET);
+    expect((await app.inject({ method: "GET", url: "/" })).body).not.toContain(INTAKE_SECRET);
   });
 
   it("defaults a missing timezone to Asia/Kolkata", async () => {
@@ -188,7 +206,7 @@ describe("POST /api/lead forwarding", () => {
     expect((await postLead(body)).statusCode).toBe(200);
 
     const forwarded = JSON.parse((fetchMock.mock.calls[0]![1] as RequestInit).body as string);
-    expect(forwarded.timezone).toBe("Asia/Kolkata");
+    expect(forwarded.input[0].timezone).toBe("Asia/Kolkata");
   });
 
   it("omits last_name, which the intake schema does not declare", async () => {
@@ -198,8 +216,8 @@ describe("POST /api/lead forwarding", () => {
     await postLead(validLead);
 
     const forwarded = JSON.parse((fetchMock.mock.calls[0]![1] as RequestInit).body as string);
-    expect(forwarded).not.toHaveProperty("last_name");
-    expect(Object.keys(forwarded).sort()).toEqual([
+    expect(forwarded.input[0]).not.toHaveProperty("last_name");
+    expect(Object.keys(forwarded.input[0]).sort()).toEqual([
       "company", "email", "first_name", "phone", "submission_id", "timezone", "use_case",
     ]);
   });
@@ -218,8 +236,8 @@ describe("POST /api/lead forwarding", () => {
 
     const res = await postLead({ ...validLead, submission_id: "forged-by-client" });
     const forwarded = JSON.parse((fetchMock.mock.calls[0]![1] as RequestInit).body as string);
-    expect(forwarded.submission_id).not.toBe("forged-by-client");
-    expect(forwarded.submission_id).toBe(res.json().submission_id);
+    expect(forwarded.input[0].submission_id).not.toBe("forged-by-client");
+    expect(forwarded.input[0].submission_id).toBe(res.json().submission_id);
   });
 
   it("returns 502 when the intake webhook responds with an error", async () => {
@@ -289,6 +307,23 @@ describe("environment", () => {
         SUPERFLOW_SHARED_SECRET: "s",
       } as NodeJS.ProcessEnv),
     ).toThrow(/SUPERFLOW_INTAKE_WEBHOOK_URL/);
+  });
+
+  it("requires the intake secret and workflow id in production", () => {
+    expect(() =>
+      parseEnv({
+        NODE_ENV: "production",
+        PUBLIC_BASE_URL: "https://voice.example.com",
+        DATABASE_URL: "postgres://localhost/db",
+        LYZR_API_KEY: "k",
+        LYZR_BASE_AGENT_ID: "a",
+        TWILIO_ACCOUNT_SID: "AC1",
+        TWILIO_AUTH_TOKEN: "t",
+        TWILIO_PHONE_NUMBER: "+1",
+        SUPERFLOW_SHARED_SECRET: "s",
+        SUPERFLOW_INTAKE_WEBHOOK_URL: INTAKE_URL,
+      } as NodeJS.ProcessEnv),
+    ).toThrow(/SUPERFLOW_INTAKE_WORKFLOW_ID/);
   });
 
   it("rejects a non-absolute intake URL", () => {

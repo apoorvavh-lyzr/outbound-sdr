@@ -46,6 +46,10 @@ export const envSchema = z
     SUPERFLOW_CALLBACK_SECRET: optionalStr,
     /** Intake webhook the demo form forwards leads to. Never sent to the browser. */
     SUPERFLOW_INTAKE_WEBHOOK_URL: optionalStr,
+    /** Sent as the x-webhook-secret header; the execute API rejects the call without it. */
+    SUPERFLOW_INTAKE_WEBHOOK_SECRET: optionalStr,
+    /** Workflow the intake call executes. The execute API 400s without it. */
+    SUPERFLOW_INTAKE_WORKFLOW_ID: optionalStr,
 
     DATABASE_URL: optionalStr,
 
@@ -88,6 +92,8 @@ export const envSchema = z
 
     if (env.NODE_ENV === "production") {
       need("SUPERFLOW_INTAKE_WEBHOOK_URL", env.SUPERFLOW_INTAKE_WEBHOOK_URL);
+      need("SUPERFLOW_INTAKE_WEBHOOK_SECRET", env.SUPERFLOW_INTAKE_WEBHOOK_SECRET);
+      need("SUPERFLOW_INTAKE_WORKFLOW_ID", env.SUPERFLOW_INTAKE_WORKFLOW_ID);
     }
 
     if (env.NODE_ENV === "production" && env.DEBUG_AUDIO_DIR) {
