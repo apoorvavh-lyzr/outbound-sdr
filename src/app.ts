@@ -22,7 +22,7 @@ import { registerDemoCheckRoutes } from "./routes/demoCheck.js";
 import { registerHealthRoutes } from "./routes/health.js";
 import { registerLeadRoutes } from "./routes/lead.js";
 import { registerTwilioStatusRoute } from "./routes/twilioStatus.js";
-import { AppError, ConflictError, toAppError } from "./utils/errors.js";
+import { AppError, ConflictError, ValidationError, toAppError } from "./utils/errors.js";
 import { getLogger } from "./utils/logging.js";
 
 export interface BuiltApp {
@@ -113,6 +113,20 @@ export async function buildApp(options: BuildAppOptions): Promise<BuiltApp> {
     // limiting keys on the real client IP.
     trustProxy: true,
     bodyLimit: 1024 * 1024,
+  });
+
+  // Tool callers (the Lyzr agent) send Content-Type: application/json with an
+  // empty body when every argument is optional. Treat that as {} instead of
+  // Fastify's default 500 so a no-argument findDemoSlots() gets the defaults.
+  app.removeContentTypeParser("application/json");
+  app.addContentTypeParser("application/json", { parseAs: "string" }, (_req, body, done) => {
+    const text = typeof body === "string" ? body : body.toString("utf8");
+    if (text.trim() === "") return done(null, {});
+    try {
+      done(null, JSON.parse(text));
+    } catch {
+      done(new ValidationError("Request body is not valid JSON"), undefined);
+    }
   });
 
   await app.register(helmet, { contentSecurityPolicy: false });

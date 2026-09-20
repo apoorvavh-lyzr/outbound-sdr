@@ -20,11 +20,12 @@
             "application/json": {
               "schema": {
                 "type": "object",
+                "required": ["timezone"],
                 "properties": {
-                  "timezone": { "type": "string", "description": "Prospect's IANA timezone, e.g. America/New_York. Strongly recommended so slots are in their daytime.", "example": "America/New_York" },
+                  "timezone": { "type": "string", "description": "REQUIRED. The prospect's IANA timezone from the call context variable `timezone` (e.g. Asia/Kolkata, America/New_York, Europe/London). Slots are filtered to the prospect's daytime in this zone.", "example": "Asia/Kolkata" },
                   "days": { "type": "integer", "description": "How many days ahead to search. Default 14.", "default": 7, "minimum": 1, "maximum": 60 },
                   "limit": { "type": "integer", "description": "Maximum slots to return. Default 8. Ask for 4-6 to keep the conversation short.", "default": 6, "minimum": 1, "maximum": 50 },
-                  "from": { "type": "string", "format": "date-time", "description": "Optional earliest date-time (ISO 8601 with offset) if the prospect asked for a specific day, e.g. 2026-09-24T00:00:00+05:30." },
+                  "from": { "type": "string", "format": "date-time", "description": "Earliest date-time to search from, ISO 8601 with offset. Set this when the prospect asks for a particular day (\"tomorrow\", \"the day after tomorrow\", \"next Monday\"): midnight of that day in their timezone, e.g. 2026-09-22T00:00:00+05:30, with days set to 1 or 2." },
                   "duration_minutes": { "type": "integer", "description": "Demo length. Default 30.", "default": 30 }
                 }
               }

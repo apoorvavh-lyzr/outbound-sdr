@@ -445,3 +445,25 @@ describe("lead-timezone slot filtering", () => {
     expect(ok.json().slots[0].start_local).toBeTruthy();
   });
 });
+
+describe("empty JSON bodies from tool callers", () => {
+  it("treats an empty application/json body as {} on /demo-slots", async () => {
+    await build(makeStub());
+    const res = await app.inject({ method: "POST", url: "/demo-slots", headers: { ...auth, "content-type": "application/json" }, payload: "" });
+    expect(res.statusCode).toBe(200);
+    expect(Array.isArray(res.json().slots)).toBe(true);
+  });
+
+  it("still rejects malformed JSON with 400", async () => {
+    await build(makeStub());
+    const res = await app.inject({ method: "POST", url: "/demo-slots", headers: { ...auth, "content-type": "application/json" }, payload: "{not json" });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it("still requires lead_email on /book-demo with an empty body", async () => {
+    await build(makeStub());
+    const res = await app.inject({ method: "POST", url: "/book-demo", headers: { ...auth, "content-type": "application/json" }, payload: "" });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toBe("invalid_request");
+  });
+});
