@@ -7,4 +7,4 @@ coverage/
 data/
 *.sqlite
 *.sqlite-journal
-.env.railway
+.env.railway 
