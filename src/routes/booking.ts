@@ -1,16 +1,29 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { csvList, type Env } from "../config/env.js";
-import type { DemoBooker } from "../google/booking.js";
+import { isValidTimeZone, type DemoBooker } from "../google/booking.js";
 import { requireSuperflowAuth } from "./calls.js";
 import { AppError, toAppError } from "../utils/errors.js";
 
-const slotsSchema = z.object({
-  from: z.string().datetime({ offset: true }).optional(),
-  days: z.number().int().min(1).max(60).default(14),
-  duration_minutes: z.number().int().min(15).max(180).optional(),
-  limit: z.number().int().min(1).max(50).default(8),
-});
+const slotsSchema = z
+  .object({
+    from: z.string().datetime({ offset: true }).optional(),
+    days: z.number().int().min(1).max(60).default(14),
+    duration_minutes: z.number().int().min(15).max(180).optional(),
+    limit: z.number().int().min(1).max(50).default(8),
+    /** Lead's IANA zone. When given, only slots inside their local daytime are returned. */
+    timezone: z
+      .string()
+      .trim()
+      .refine(isValidTimeZone, "timezone must be a valid IANA zone, e.g. America/New_York")
+      .optional(),
+    lead_hours_start: z.number().int().min(0).max(23).default(9),
+    lead_hours_end: z.number().int().min(1).max(24).default(18),
+  })
+  .refine((q) => q.lead_hours_end > q.lead_hours_start, {
+    message: "lead_hours_end must be after lead_hours_start",
+    path: ["lead_hours_end"],
+  });
 
 const bookSchema = z.object({
   lead_email: z.string().trim().toLowerCase().email("lead_email must be a valid address"),
@@ -64,13 +77,23 @@ export function registerBookingRoutes(app: FastifyInstance, deps: BookingRoutesD
     }
     const q = parsed.data;
     try {
+      const lead = q.timezone
+        ? { timezone: q.timezone, hoursStart: q.lead_hours_start, hoursEnd: q.lead_hours_end }
+        : undefined;
       const slots = await b.availableSlots({
         from: q.from ? new Date(q.from) : undefined,
         days: q.days,
         durationMinutes: q.duration_minutes,
         limit: q.limit,
+        lead,
       });
-      return reply.send({ success: true, calendar_id: b.calendarId, timezone: b.timezone, slots });
+      return reply.send({
+        success: true,
+        calendar_id: b.calendarId,
+        timezone: b.timezone,
+        lead_timezone: lead?.timezone ?? null,
+        slots,
+      });
     } catch (err) {
       return fail(reply, toAppError(err));
     }

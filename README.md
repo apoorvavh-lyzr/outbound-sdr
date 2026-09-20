@@ -384,13 +384,22 @@ Replace the agent's Composio `GOOGLECALENDAR_FIND_FREE_SLOTS` /
 
 **Find slots** — `POST https://<RAILWAY_DOMAIN>/demo-slots`
 ```jsonc
-{ "from": "2026-09-22T00:00:00Z", "days": 7, "duration_minutes": 30, "limit": 8 }   // all optional
-→ { "success": true, "timezone": "Asia/Kolkata",
-    "slots": [ { "start": "2026-09-22T04:30:00.000Z", "end": "2026-09-22T05:00:00.000Z" }, … ] }
+{ "from": "2026-09-22T00:00:00Z", "days": 7, "duration_minutes": 30, "limit": 8,   // all optional
+  "timezone": "Europe/London", "lead_hours_start": 9, "lead_hours_end": 18 }      // lead's zone, optional
+→ { "success": true, "timezone": "Asia/Kolkata", "lead_timezone": "Europe/London",
+    "slots": [ { "start": "2026-09-22T08:00:00.000Z", "end": "2026-09-22T08:30:00.000Z",
+                 "start_local": "Tue, 22 Sept 2026, 09:00 BST", "end_local": "Tue, 22 Sept 2026, 09:30 BST" }, … ] }
 ```
 Slots respect `DEMO_HOURS_*`, `DEMO_WORKING_DAYS`, `DEMO_MIN_NOTICE_MINUTES`
-and the calendar's free/busy. A free/busy failure is an error
-(`slot_lookup_failed`), never "everything is free".
+and the calendar's free/busy. Pass the lead's IANA `timezone` (the Trigger's
+`timezone` field) and only slots that also fall inside the lead's local
+daytime (`lead_hours_start`–`lead_hours_end`, default 09–18) come back, each
+with `start_local`/`end_local` for the agent to read out. An invalid zone is a
+`400`, never silently ignored. If Lyzr's hours and the lead's daytime never
+overlap the list is empty — with the default 10–18 IST window that is the
+case for North America, so widen `DEMO_HOURS_END` if you demo US prospects.
+A free/busy failure is an error (`slot_lookup_failed`), never "everything is
+free".
 
 **Book** — `POST https://<RAILWAY_DOMAIN>/book-demo`
 ```jsonc

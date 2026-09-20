@@ -35,16 +35,27 @@ export interface BookingConfig {
   timeoutMs: number;
 }
 
+/** The lead's side of the overlap: only slots inside their local daytime are offered. */
+export interface LeadWindow {
+  timezone: string;
+  hoursStart: number;
+  hoursEnd: number;
+}
+
 export interface SlotQuery {
   from?: Date;
   days: number;
   durationMinutes?: number;
   limit: number;
+  lead?: LeadWindow;
 }
 
 export interface Slot {
   start: string;
   end: string;
+  /** Present when a lead timezone was given: human-readable, in that zone. */
+  start_local?: string;
+  end_local?: string;
 }
 
 export interface BookingRequest {
@@ -102,6 +113,36 @@ function zonedParts(date: Date, timeZone: string) {
   };
 }
 
+export function isValidTimeZone(tz: string): boolean {
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: tz });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** e.g. "Tue, 22 Sep 2026, 10:00 EDT" — what the agent reads out to the lead. */
+export function formatLocal(date: Date, timeZone: string): string {
+  return new Intl.DateTimeFormat("en-GB", {
+    timeZone,
+    weekday: "short",
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+    timeZoneName: "short",
+  }).format(date);
+}
+
+/** Minutes since local midnight of `date` in `timeZone`. */
+function localMinutes(date: Date, timeZone: string): number {
+  const p = zonedParts(date, timeZone);
+  return p.hour * 60 + p.minute;
+}
+
 /** UTC instant for a wall-clock time in `timeZone`. Handles DST via one correction pass. */
 export function zonedTimeToUtc(
   year: number,
@@ -120,7 +161,9 @@ export function zonedTimeToUtc(
 /**
  * Pure slot generator, exported for tests: walks each working day's business
  * hours in `slotMinutes` steps and drops anything overlapping a busy interval,
- * starting before `earliest`, or shorter than `durationMinutes`.
+ * starting before `earliest`, or shorter than `durationMinutes`. With a
+ * `lead` window the slot must ALSO sit inside the lead's local daytime
+ * (start at or after hoursStart, end at or before hoursEnd, same local day).
  */
 export function computeFreeSlots(
   config: BookingConfig,
@@ -130,11 +173,19 @@ export function computeFreeSlots(
   durationMinutes: number,
   earliest: Date,
   limit: number,
+  lead?: LeadWindow,
 ): Slot[] {
   const slots: Slot[] = [];
   const stepMs = config.slotMinutes * MINUTE;
   const durMs = durationMinutes * MINUTE;
   const overlaps = (s: number, e: number) => busy.some((b) => s < b.end && e > b.start);
+  const inLeadDaytime = (s: number, e: number) => {
+    if (!lead) return true;
+    const startMin = localMinutes(new Date(s), lead.timezone);
+    // End is exclusive; a slot ending exactly at hoursEnd (e.g. 17:30–18:00) is fine.
+    const endMin = localMinutes(new Date(e - 1), lead.timezone) + 1;
+    return startMin >= lead.hoursStart * 60 && endMin <= lead.hoursEnd * 60 && endMin > startMin;
+  };
 
   // Iterate by local calendar day so DST changes do not skip or double a day.
   const first = zonedParts(from, config.timezone);
@@ -147,7 +198,13 @@ export function computeFreeSlots(
       const e = s + durMs;
       if (s < earliest.getTime()) continue;
       if (overlaps(s, e)) continue;
-      slots.push({ start: new Date(s).toISOString(), end: new Date(e).toISOString() });
+      if (!inLeadDaytime(s, e)) continue;
+      const slot: Slot = { start: new Date(s).toISOString(), end: new Date(e).toISOString() };
+      if (lead) {
+        slot.start_local = formatLocal(new Date(s), lead.timezone);
+        slot.end_local = formatLocal(new Date(e), lead.timezone);
+      }
+      slots.push(slot);
     }
   }
   return slots;
@@ -215,9 +272,16 @@ export class DemoBooker {
     return this.withTimeout(async (signal) => {
       const token = await this.checker.auth.getAccessToken(SCOPE_CALENDAR, signal);
       const busy = await this.freeBusy(token, from, to, signal);
-      const slots = computeFreeSlots(this.config, busy, from, query.days, duration, earliest, query.limit);
+      const slots = computeFreeSlots(this.config, busy, from, query.days, duration, earliest, query.limit, query.lead);
       this.logger.info(
-        { event: "demo_slots", calendar_id: this.config.calendarId, from: from.toISOString(), days: query.days, returned: slots.length },
+        {
+          event: "demo_slots",
+          calendar_id: this.config.calendarId,
+          from: from.toISOString(),
+          days: query.days,
+          lead_timezone: query.lead?.timezone ?? null,
+          returned: slots.length,
+        },
         "computed available demo slots",
       );
       return slots;

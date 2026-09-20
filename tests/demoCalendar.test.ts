@@ -404,3 +404,44 @@ describe("missingCalendarActions with backend booking tools", async () => {
     expect(missingCalendarActions(config, [])).toEqual([]);
   });
 });
+
+describe("lead-timezone slot filtering", () => {
+  const cfg: BookingConfig = {
+    calendarId: CAL, timezone: "Asia/Kolkata", hoursStart: 10, hoursEnd: 18,
+    workingDays: [1, 2, 3, 4, 5], slotMinutes: 30, minNoticeMinutes: 0, timeoutMs: 1000,
+  };
+  // Monday 2026-09-21. IST 10:00–18:00 = 04:30Z–12:30Z. New York (EDT, -4) 09:00 = 13:00Z.
+  const from = new Date("2026-09-21T00:00:00Z");
+
+  it("returns nothing when Lyzr hours and the lead's daytime never overlap", () => {
+    const slots = computeFreeSlots(cfg, [], from, 1, 30, from, 50, { timezone: "America/New_York", hoursStart: 9, hoursEnd: 18 });
+    expect(slots).toEqual([]);
+  });
+
+  it("keeps only the overlap and renders local times", () => {
+    // Lead in London (BST, +1): 09:00 London = 08:00Z. Overlap with IST window: 08:00Z–12:30Z.
+    const slots = computeFreeSlots(cfg, [], from, 1, 30, from, 50, { timezone: "Europe/London", hoursStart: 9, hoursEnd: 18 });
+    expect(slots[0]!.start).toBe("2026-09-21T08:00:00.000Z");
+    expect(slots.at(-1)!.end).toBe("2026-09-21T12:30:00.000Z");
+    expect(slots[0]!.start_local).toMatch(/Mon,? 21 Sep(t)? 2026,? 09:00/);
+  });
+
+  it("allows a slot ending exactly at the lead's closing hour", () => {
+    // Lead in Dubai (+4): hours 9–12 → 05:00Z–08:00Z. Slot 07:30Z–08:00Z ends exactly at 12:00 Dubai.
+    const slots = computeFreeSlots(cfg, [], from, 1, 30, from, 50, { timezone: "Asia/Dubai", hoursStart: 9, hoursEnd: 12 });
+    expect(slots.at(-1)!.end).toBe("2026-09-21T08:00:00.000Z");
+  });
+
+  it("route validates the timezone and filters", async () => {
+    await build(makeStub());
+    const bad = await post("/demo-slots", { timezone: "Mars/Olympus" });
+    expect(bad.statusCode).toBe(400);
+    expect(bad.json().message).toContain("IANA");
+
+    const ok = await post("/demo-slots", { from: "2026-09-21T00:00:00Z", days: 1, limit: 50, timezone: "Europe/London" });
+    expect(ok.statusCode).toBe(200);
+    expect(ok.json().lead_timezone).toBe("Europe/London");
+    expect(ok.json().slots[0]).toMatchObject({ start: "2026-09-21T08:00:00.000Z" });
+    expect(ok.json().slots[0].start_local).toBeTruthy();
+  });
+});
