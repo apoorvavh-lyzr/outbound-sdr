@@ -241,6 +241,185 @@ time, the service records `reschedule_required` and
 `preferred_replacement_slot` for SuperFlow to act on. The agent must not claim a
 meeting was moved.
 
+## Q0. Demo-calendar check and booking (service account)
+
+All demo bookings live on the `demos@lyzr.ai` calendar. Nobody can OAuth into
+that mailbox from SuperFlow or Composio, so this service holds one Google
+Workspace **service account** with Domain-Wide Delegation and impersonates
+`demos@lyzr.ai` for everything calendar-related. Credentials never leave the
+backend; SuperFlow and the voice agent only ever see a URL and the shared
+bearer secret.
+
+```
+Lead arrives in SuperFlow
+        │
+        ▼
+POST /check-demo-booking            ← service account reads demos@lyzr.ai
+        │
+   already_booked?
+   ├── null (error)  → STOP: never call in the wrong mode
+   ├── true          → POST /api/call  call_mode=confirmation (+ meeting_* fields)
+   └── false         → POST /api/call  call_mode=booking
+                            │
+                       voice agent on the call
+                            ├── POST /demo-slots   ← free/busy on demos@lyzr.ai
+                            └── POST /book-demo    ← events.insert + Meet link,
+                                                      invite emailed to the lead
+```
+
+### Google Workspace prerequisites
+
+1. Service account in the Cloud project, Calendar API enabled.
+2. Admin console → Security → API controls → Domain-wide delegation → add
+   the service account's **client ID** with the scope
+   `https://www.googleapis.com/auth/calendar`. All three endpoints use this
+   one scope (Google only issues tokens for scopes delegated verbatim, so the
+   read check shares it rather than requiring `calendar.readonly` as well).
+3. Set `GOOGLE_SERVICE_ACCOUNT_EMAIL`, `GOOGLE_PRIVATE_KEY` (single line with
+   `\n`), `GOOGLE_PRIVATE_KEY_ID`, `GOOGLE_CLIENT_ID`,
+   `GOOGLE_IMPERSONATED_USER=demos@lyzr.ai` on Railway.
+
+### SuperFlow: replacing the Google Calendar Tool node
+
+The workflow keeps its shape — `Trigger → check → Code → If → (Code 1 → HTTP
+Request 1 | Code 2 → HTTP Request)` — only the check and the Code node change:
+
+```
+Trigger (webhook)
+   │
+   ▼
+HTTP Request  POST /check-demo-booking        ← replaces the GOOGLECALENDAR_EVENTS_LIST Tool node
+   │
+   ▼
+Code  (transform, below)
+   │
+   ▼
+If  {{ $json.meeting_found }} is true
+   ├─ True  → Code 1 (confirmation) → HTTP Request 1  POST /api/call   ← unchanged
+   └─ False → Code 2 (booking)      → HTTP Request    POST /api/call   ← unchanged
+```
+
+**1. Delete the Tool node** (`GOOGLECALENDAR_EVENTS_LIST`) and its Google
+connection. Nothing in SuperFlow needs Google access any more.
+
+**2. Add an HTTP Request node** in its place:
+
+```
+POST https://<RAILWAY_DOMAIN>/check-demo-booking
+Authorization: Bearer <SUPERFLOW_SHARED_SECRET>      (the same secret HTTP Request 1 / HTTP Request already use)
+Content-Type:  application/json
+
+{ "lead_email": "{{ $('Trigger').json.email }}",
+  "lead_name":  "{{ $('Trigger').json.first_name }}" }
+```
+
+Set the node to **continue on error / return the response body on non-2xx**
+so a `success:false` answer reaches the Code node instead of aborting silently.
+
+**3. Replace the Code node** with:
+
+```js
+const r = $json;                       // response of the HTTP node above
+
+if (r.success !== true || r.already_booked === null) {
+  // Calendar could not be read. Never guess: stop here rather than
+  // calling someone in the wrong mode.
+  throw new Error(`calendar check failed: ${r.error ?? "unknown"} ${r.message ?? ""}`);
+}
+
+const ev = r.event;
+return {
+  ...$('Trigger').json,
+  meeting_found: r.already_booked === true,
+  meeting_id:    ev?.id        ?? null,
+  meeting_start: ev?.start     ?? null,
+  meeting_end:   ev?.end       ?? null,
+  meeting_link:  ev?.meet_link ?? ev?.html_link ?? null,
+  meeting_owner: ev?.owner     ?? null,
+};
+```
+
+**4. If node** — condition `{{ $json.meeting_found }}` **is true**.
+`meeting_found` is only ever `true` or `false` here because the Code node
+throws on an indeterminate answer; the old `!= true` style is safe again for
+that reason, but "is true" is still the clearer choice.
+
+**5. Code 1 / Code 2 / both HTTP Request nodes stay exactly as they are** —
+the field names above are the ones sections O and P already consume.
+
+### `/check-demo-booking` contract
+
+Request: `lead_email` (required; trimmed and lower-cased) and optional
+`lead_name`. Matching is by attendee email only — an upcoming, non-cancelled
+event within `DEMO_CHECK_WINDOW_DAYS` (90) on `demos@lyzr.ai` where the lead
+has not declined. Title and name are ignored.
+
+```jsonc
+// 200 – booked
+{ "success": true, "already_booked": true, "lead_email": "john@company.com",
+  "calendar_id": "demos@lyzr.ai",
+  "event": { "id": "…", "summary": "Lyzr Demo – Acme / John Smith",
+             "start": "2026-09-24T15:30:00+05:30", "end": "2026-09-24T16:00:00+05:30",
+             "html_link": "https://www.google.com/calendar/event?eid=…",
+             "meet_link": "https://meet.google.com/…",
+             "owner": "Priya (Lyzr AE)" } }          // first Lyzr attendee, else organizer
+
+// 200 – not booked
+{ "success": true, "already_booked": false, "lead_email": "john@company.com",
+  "calendar_id": "demos@lyzr.ai", "event": null }
+
+// 502 / 503 – calendar could not be checked (auth, API, timeout, malformed, unconfigured)
+{ "success": false, "already_booked": null, "lead_email": "john@company.com",
+  "event": null, "error": "calendar_check_failed", "message": "…" }
+
+// 400 / 401 – caller's fault
+{ "success": false, "already_booked": null, "error": "invalid_request" | "unauthorized", "message": "…" }
+```
+
+### Voice agent: booking through this backend
+
+Replace the agent's Composio `GOOGLECALENDAR_FIND_FREE_SLOTS` /
+`GOOGLECALENDAR_CREATE_EVENT` actions with two HTTP tools, both with header
+`Authorization: Bearer <SUPERFLOW_SHARED_SECRET>`:
+
+**Find slots** — `POST https://<RAILWAY_DOMAIN>/demo-slots`
+```jsonc
+{ "from": "2026-09-22T00:00:00Z", "days": 7, "duration_minutes": 30, "limit": 8 }   // all optional
+→ { "success": true, "timezone": "Asia/Kolkata",
+    "slots": [ { "start": "2026-09-22T04:30:00.000Z", "end": "2026-09-22T05:00:00.000Z" }, … ] }
+```
+Slots respect `DEMO_HOURS_*`, `DEMO_WORKING_DAYS`, `DEMO_MIN_NOTICE_MINUTES`
+and the calendar's free/busy. A free/busy failure is an error
+(`slot_lookup_failed`), never "everything is free".
+
+**Book** — `POST https://<RAILWAY_DOMAIN>/book-demo`
+```jsonc
+{ "lead_email": "john@company.com", "lead_name": "John Smith", "company": "Acme",
+  "phone": "+1…", "start": "2026-09-22T10:00:00+05:30", "duration_minutes": 30,
+  "notes": "Wants an AI SDR for outbound" }
+→ 201 { "success": true, "already_booked": false,
+        "event": { "id": "…", "start": "…", "end": "…", "html_link": "…",
+                   "meet_link": "https://meet.google.com/…" } }
+→ 200 { "success": true, "already_booked": true, "event": { …existing… } }   // idempotent
+→ 409 { "success": false, "error": "slot_taken" | "slot_in_past" }
+→ 502 { "success": false, "error": "calendar_check_failed" | "booking_failed" }
+```
+The event is created on `demos@lyzr.ai` with the lead (and `DEMO_HOST_EMAILS`)
+as attendees, a Google Meet link, and `sendUpdates=all` so the lead receives
+the invite. Re-booking a lead who already has an upcoming demo returns that
+event instead of creating a second one.
+
+After switching the agent's tools, set `LYZR_REQUIRED_AGENT_TOOLS=/demo-slots,/book-demo`
+so the pre-dial gate checks for the new tools instead of the Composio names.
+
+### Optional server-side safety net
+
+`ENABLE_DEMO_BOOKING_GUARD=true` makes `POST /api/call` itself run the same
+check and refuse a *booked* lead with `409 conflict` (and an unreadable
+calendar with `502 calendar_check_failed`). That fits a flow that must never
+call booked leads; with the confirmation-call flow above it would block the
+confirmation branch, so leave it **off** there.
+
 ## Q. Transcript + summary workflow
 
 Recommended (keeps CRM/email logic in SuperFlow):
@@ -374,6 +553,9 @@ Assumptions that could **not** be verified, and how they are contained:
 | `GET` | `/health` | — | Liveness |
 | `GET` | `/ready` | — | Config + database readiness |
 | `POST` | `/api/call` | Bearer | Place an outbound call |
+| `POST` | `/check-demo-booking` | Bearer | Has this lead an upcoming demo on `demos@lyzr.ai`? Fails closed. |
+| `POST` | `/demo-slots` | Bearer | Open demo slots (free/busy on `demos@lyzr.ai`) |
+| `POST` | `/book-demo` | Bearer | Create the demo event + Meet link; idempotent per lead |
 | `GET` | `/api/calls/:callId` | Bearer | Sanitized call record |
 | `GET` | `/api/calls/:callId/transcript` | Bearer | Transcript, or an honest "not configured" |
 | `POST` | `/api/twilio/status` | Twilio signature | Status callbacks |

@@ -44,10 +44,18 @@ export function collectActionNames(node: unknown, found = new Set<string>()): Se
   return found;
 }
 
-/** Which required calendar actions are missing from a prepared agent config. */
-export function missingCalendarActions(config: unknown): string[] {
+/**
+ * Which required tools are missing from a prepared agent config. Upper-case
+ * identifiers are matched as action names; anything else (e.g. "/book-demo")
+ * is matched as a substring of the serialised config, which is how an HTTP
+ * tool pointing at this backend shows up.
+ */
+export function missingCalendarActions(config: unknown, required: readonly string[] = REQUIRED_CALENDAR_ACTIONS): string[] {
   const actions = collectActionNames(config);
-  return REQUIRED_CALENDAR_ACTIONS.filter((required) => !actions.has(required));
+  const serialised = JSON.stringify(config ?? {});
+  return required.filter((tool) =>
+    /^[A-Z][A-Z0-9_]{3,}$/.test(tool) ? !actions.has(tool) : !serialised.includes(tool),
+  );
 }
 
 /**

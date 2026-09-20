@@ -7,7 +7,7 @@ import { safeEqual } from "../twilio/validation.js";
 import { NotFoundError, UnauthorizedError, ValidationError } from "../utils/errors.js";
 
 /** Bearer check against SUPERFLOW_SHARED_SECRET, in constant time. */
-function requireSuperflowAuth(request: FastifyRequest, env: Env): void {
+export function requireSuperflowAuth(request: FastifyRequest, env: Env): void {
   const expected = env.SUPERFLOW_SHARED_SECRET;
   // With no secret configured, only mock mode may run unauthenticated.
   if (!expected) {

@@ -2,7 +2,7 @@ import { PreflightError } from "../utils/errors.js";
 import { getLogger } from "../utils/logging.js";
 import type { Lead } from "../calls/types.js";
 import { LyzrClient, missingCalendarActions, sanitizeAgentConfig } from "./client.js";
-import { extractAgentId, type LyzrAgent } from "./schemas.js";
+import { extractAgentId, REQUIRED_CALENDAR_ACTIONS, type LyzrAgent } from "./schemas.js";
 
 export interface PreparedAgent {
   agentId: string;
@@ -134,7 +134,11 @@ export class SessionConfigStrategy implements AgentContextStrategy {
   readonly name = "session-config";
   private readonly log = getLogger().child({ component: "session-config-strategy" });
 
-  constructor(private readonly client: LyzrClient) {}
+  constructor(
+    private readonly client: LyzrClient,
+    /** Tool identifiers the base agent must carry; see LYZR_REQUIRED_AGENT_TOOLS. */
+    private readonly requiredTools: readonly string[] = REQUIRED_CALENDAR_ACTIONS,
+  ) {}
 
   async prepareCallAgent(baseAgentId: string, lead: Lead, callId: string): Promise<PreparedAgent> {
     const base = await this.client.getAgent(baseAgentId);
@@ -142,7 +146,7 @@ export class SessionConfigStrategy implements AgentContextStrategy {
 
     // The saved agent must still carry the calendar tooling; we just do not
     // modify it. A read-only check keeps the pre-dial guarantee intact.
-    const missing = missingCalendarActions(config);
+    const missing = missingCalendarActions(config, this.requiredTools);
     if (missing.length > 0) {
       throw new PreflightError(
         "calendar_tools_missing",
@@ -181,7 +185,11 @@ export class CloneAgentStrategy implements AgentContextStrategy {
   readonly name = "clone-agent";
   private readonly log = getLogger().child({ component: "clone-agent-strategy" });
 
-  constructor(private readonly client: LyzrClient) {}
+  constructor(
+    private readonly client: LyzrClient,
+    /** Tool identifiers the base agent must carry; see LYZR_REQUIRED_AGENT_TOOLS. */
+    private readonly requiredTools: readonly string[] = REQUIRED_CALENDAR_ACTIONS,
+  ) {}
 
   async prepareCallAgent(baseAgentId: string, lead: Lead, callId: string): Promise<PreparedAgent> {
     const base = await this.client.getAgent(baseAgentId);
@@ -190,7 +198,7 @@ export class CloneAgentStrategy implements AgentContextStrategy {
     const payload = this.buildClonePayload(base, lead, callId);
 
     // Verify the calendar tooling survived the clone BEFORE creating anything.
-    const missing = missingCalendarActions(payload.body);
+    const missing = missingCalendarActions(payload.body, this.requiredTools);
     if (missing.length > 0) {
       throw new PreflightError(
         "calendar_tools_missing",
@@ -256,6 +264,12 @@ export class CloneAgentStrategy implements AgentContextStrategy {
  * Reuse of the saved agent is the production path. Cloning is only reachable by
  * explicitly setting LYZR_ENABLE_AGENT_CLONING, and is never the default.
  */
-export function selectContextStrategy(client: LyzrClient, enableCloning = false): AgentContextStrategy {
-  return enableCloning ? new CloneAgentStrategy(client) : new SessionConfigStrategy(client);
+export function selectContextStrategy(
+  client: LyzrClient,
+  enableCloning = false,
+  requiredTools: readonly string[] = REQUIRED_CALENDAR_ACTIONS,
+): AgentContextStrategy {
+  return enableCloning
+    ? new CloneAgentStrategy(client, requiredTools)
+    : new SessionConfigStrategy(client, requiredTools);
 }

@@ -23,6 +23,11 @@ export interface CallServiceDeps {
   twilio: TwilioCallClient;
   logger: Logger;
   suppressionCheck?: SuppressionCheck;
+  /**
+   * Refuses the call when the lead already has a demo booked. Must throw on
+   * an indeterminate answer - a calendar outage is never "not booked".
+   */
+  demoBookingGuard?: (lead: Lead) => Promise<void>;
   onTerminal?: (call: CallRecord) => void;
 }
 
@@ -64,6 +69,10 @@ export class CallService {
       if (reason) {
         throw new PreflightError("suppressed", `Call suppressed: ${reason}`);
       }
+    }
+
+    if (env.ENABLE_DEMO_BOOKING_GUARD && this.deps.demoBookingGuard) {
+      await this.deps.demoBookingGuard(lead);
     }
 
     let call: CallRecord;
