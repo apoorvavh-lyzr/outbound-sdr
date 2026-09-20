@@ -36,6 +36,30 @@ const bookSchema = z.object({
   host_emails: z.array(z.string().trim().toLowerCase().email()).max(5).optional(),
 });
 
+/**
+ * LLM tool callers sometimes fall back to generic calendar field names
+ * (start_time, invitees, title…) despite the schema. Map the obvious ones
+ * onto ours before validation so a booking is not lost to naming.
+ */
+export function normalizeBookingBody(raw: unknown): Record<string, unknown> {
+  if (!raw || typeof raw !== "object") return {};
+  const b = { ...(raw as Record<string, unknown>) };
+  const first = (v: unknown) => (Array.isArray(v) ? v[0] : v);
+  b.lead_email ??= b.email ?? b.attendee_email ?? b.prospect_email ?? first(b.invitees) ?? first(b.attendees);
+  b.lead_name ??= b.name ?? b.attendee_name ?? b.prospect_name;
+  b.start ??= b.start_time ?? b.startTime ?? b.start_datetime ?? b.datetime;
+  const end = b.end ?? b.end_time ?? b.endTime;
+  if (b.duration_minutes === undefined && typeof b.start === "string" && typeof end === "string") {
+    const ms = Date.parse(end) - Date.parse(b.start);
+    if (Number.isFinite(ms) && ms > 0) b.duration_minutes = Math.round(ms / 60000);
+  }
+  b.notes ??= b.description ?? b.agenda;
+  for (const k of ["email", "attendee_email", "prospect_email", "invitees", "attendees", "name", "attendee_name", "prospect_name",
+    "start_time", "startTime", "start_datetime", "datetime", "end", "end_time", "endTime", "description", "agenda",
+    "title", "summary", "calendar_id", "timezone", "time_zone", "meet_link"]) delete b[k];
+  return b;
+}
+
 export interface BookingRoutesDeps {
   env: Env;
   booker: DemoBooker | undefined;
@@ -103,9 +127,15 @@ export function registerBookingRoutes(app: FastifyInstance, deps: BookingRoutesD
     const b = guard(request, reply);
     if (!b) return reply;
 
-    const parsed = bookSchema.safeParse(request.body ?? {});
+    const parsed = bookSchema.safeParse(normalizeBookingBody(request.body));
     if (!parsed.success) {
-      return fail(reply, new AppError("invalid_request", parsed.error.issues[0]?.message ?? "invalid request", 400));
+      const issue = parsed.error.issues[0];
+      const field = issue?.path.join(".") || "body";
+      const why = issue?.message === "Required" ? "is required" : (issue?.message ?? "is invalid");
+      return fail(
+        reply,
+        new AppError("invalid_request", `${field} ${why}. Expected fields: lead_email, start (ISO 8601 from findDemoSlots), and optionally lead_name, company, phone, duration_minutes, notes.`, 400),
+      );
     }
     const r = parsed.data;
     try {

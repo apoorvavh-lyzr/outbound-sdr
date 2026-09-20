@@ -467,3 +467,26 @@ describe("empty JSON bodies from tool callers", () => {
     expect(res.json().error).toBe("invalid_request");
   });
 });
+
+describe("bookDemo accepts generic calendar field names", () => {
+  it("maps start_time / invitees / end_time onto the schema", async () => {
+    const stub = makeStub();
+    await build(stub);
+    const res = await post("/book-demo", {
+      calendar_id: "demos@lyzr.ai", title: "Lyzr Demo - Lyzr", invitees: ["apoorva.vh@lyzr.ai"],
+      start_time: "2099-09-22T16:30:00+05:30", end_time: "2099-09-22T17:00:00+05:30", timezone: "Asia/Kolkata",
+    });
+    expect(res.statusCode).toBe(201);
+    const body = stub.inserted[0] as Record<string, unknown>;
+    expect(body.attendees).toEqual([{ email: "apoorva.vh@lyzr.ai", displayName: undefined }]);
+    expect(body.start).toEqual({ dateTime: "2099-09-22T11:00:00.000Z", timeZone: "UTC" });
+    expect(body.end).toEqual({ dateTime: "2099-09-22T11:30:00.000Z", timeZone: "UTC" });
+  });
+
+  it("names the missing field", async () => {
+    await build(makeStub());
+    const res = await post("/book-demo", { title: "x", start_time: "2099-09-22T16:30:00+05:30" });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().message).toMatch(/^lead_email is required/);
+  });
+});
