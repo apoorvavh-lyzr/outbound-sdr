@@ -8,9 +8,9 @@ import { AppError, toAppError } from "../utils/errors.js";
 const slotsSchema = z
   .object({
     from: z.string().datetime({ offset: true }).optional(),
-    days: z.number().int().min(1).max(60).default(14),
+    days: z.number().int().min(1).max(60).default(7),
     duration_minutes: z.number().int().min(15).max(180).optional(),
-    limit: z.number().int().min(1).max(50).default(8),
+    limit: z.number().int().min(1).max(50).default(20),
     /** Lead's IANA zone. When given, only slots inside their local daytime are returned. */
     timezone: z
       .string()
@@ -45,18 +45,25 @@ export function normalizeBookingBody(raw: unknown): Record<string, unknown> {
   if (!raw || typeof raw !== "object") return {};
   const b = { ...(raw as Record<string, unknown>) };
   const first = (v: unknown) => (Array.isArray(v) ? v[0] : v);
-  b.lead_email ??= b.email ?? b.attendee_email ?? b.prospect_email ?? first(b.invitees) ?? first(b.attendees);
-  b.lead_name ??= b.name ?? b.attendee_name ?? b.prospect_name;
-  b.start ??= b.start_time ?? b.startTime ?? b.start_datetime ?? b.datetime;
+  const emailOf = (v: unknown): unknown => {
+    const x = first(v);
+    return x && typeof x === "object" ? (x as Record<string, unknown>).email : x;
+  };
+  b.lead_email ??=
+    b.email ?? b.attendee_email ?? b.prospect_email ?? b.invitee_email ?? b.guest_email ??
+    emailOf(b.invite) ?? emailOf(b.invitee) ?? emailOf(b.invitees) ?? emailOf(b.attendee) ?? emailOf(b.attendees) ?? emailOf(b.guests);
+  b.lead_name ??= b.name ?? b.attendee_name ?? b.prospect_name ?? b.invitee_name ?? b.full_name;
+  b.start ??= b.start_time ?? b.startTime ?? b.start_datetime ?? b.datetime ?? b.date_time ?? b.time;
   const end = b.end ?? b.end_time ?? b.endTime;
+  b.duration_minutes ??= b.duration ?? b.length_minutes ?? b.duration_min;
   if (b.duration_minutes === undefined && typeof b.start === "string" && typeof end === "string") {
     const ms = Date.parse(end) - Date.parse(b.start);
     if (Number.isFinite(ms) && ms > 0) b.duration_minutes = Math.round(ms / 60000);
   }
-  b.notes ??= b.description ?? b.agenda;
-  for (const k of ["email", "attendee_email", "prospect_email", "invitees", "attendees", "name", "attendee_name", "prospect_name",
-    "start_time", "startTime", "start_datetime", "datetime", "end", "end_time", "endTime", "description", "agenda",
-    "title", "summary", "calendar_id", "timezone", "time_zone", "meet_link"]) delete b[k];
+  if (typeof b.duration_minutes === "string" && /^\d+$/.test(b.duration_minutes)) b.duration_minutes = Number(b.duration_minutes);
+  b.notes ??= b.description ?? b.agenda ?? b.note;
+  const ours = new Set(["lead_email", "lead_name", "company", "phone", "start", "duration_minutes", "notes", "host_emails"]);
+  for (const k of Object.keys(b)) if (!ours.has(k)) delete b[k];
   return b;
 }
 

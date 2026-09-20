@@ -490,3 +490,17 @@ describe("bookDemo accepts generic calendar field names", () => {
     expect(res.json().message).toMatch(/^lead_email is required/);
   });
 });
+
+describe("bookDemo accepts the singular Composio-style names", () => {
+  it("maps invite / duration onto the schema", async () => {
+    const stub = makeStub();
+    await build(stub);
+    const res = await post("/book-demo", {
+      title: "Lyzr Demo - Lyzr", invite: "apoorva.vh@lyzr.ai", start: "2099-09-21T14:30:00+05:30", duration: 30, timezone: "Asia/Kolkata",
+    });
+    expect(res.statusCode).toBe(201);
+    const body = stub.inserted[0] as Record<string, unknown>;
+    expect(body.attendees).toEqual([{ email: "apoorva.vh@lyzr.ai", displayName: undefined }]);
+    expect(body.end).toEqual({ dateTime: "2099-09-21T09:30:00.000Z", timeZone: "UTC" });
+  });
+});
