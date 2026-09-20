@@ -98,8 +98,9 @@ export const envSchema = z
     /**
      * Tool names or URL fragments that must appear in the base agent's config
      * before a call is dialled. Defaults to the Composio calendar actions;
-     * once the agent books through this backend, set it to
-     * "/demo-slots,/book-demo". Empty string disables the gate.
+     * once the agent books through this backend, set it to the names Lyzr
+     * generated for the custom tool set (openapi-<toolset>-<operationId>).
+     * Empty string disables the gate.
      */
     LYZR_REQUIRED_AGENT_TOOLS: z
       .string()

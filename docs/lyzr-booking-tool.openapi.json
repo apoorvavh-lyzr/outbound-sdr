@@ -1,0 +1,125 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "Lyzr Demo Booking",
+    "version": "1.0.0",
+    "description": "Finds open demo slots on the shared Lyzr demo calendar (demos@lyzr.ai) and books one for the prospect. Always call findDemoSlots before bookDemo, and only pass a start value that findDemoSlots returned."
+  },
+  "servers": [
+    { "url": "https://outbound-sdr-production.up.railway.app", "description": "Production" }
+  ],
+  "paths": {
+    "/demo-slots": {
+      "post": {
+        "operationId": "findDemoSlots",
+        "summary": "Find open demo slots",
+        "description": "Returns upcoming 30-minute slots that are free on the Lyzr demo calendar AND fall inside the prospect's local daytime. Pass the prospect's IANA timezone (e.g. America/New_York, Europe/London, Asia/Kolkata). Read the start_local value aloud to the prospect; pass the matching start value to bookDemo. An empty slots list means there is no overlap between Lyzr's working hours and the prospect's daytime in the next few days - offer to email a booking link instead.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "timezone": { "type": "string", "description": "Prospect's IANA timezone, e.g. America/New_York. Strongly recommended so slots are in their daytime.", "example": "America/New_York" },
+                  "days": { "type": "integer", "description": "How many days ahead to search. Default 14.", "default": 7, "minimum": 1, "maximum": 60 },
+                  "limit": { "type": "integer", "description": "Maximum slots to return. Default 8. Ask for 4-6 to keep the conversation short.", "default": 6, "minimum": 1, "maximum": 50 },
+                  "from": { "type": "string", "format": "date-time", "description": "Optional earliest date-time (ISO 8601 with offset) if the prospect asked for a specific day, e.g. 2026-09-24T00:00:00+05:30." },
+                  "duration_minutes": { "type": "integer", "description": "Demo length. Default 30.", "default": 30 }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Slots found (possibly an empty list)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": { "type": "boolean" },
+                    "timezone": { "type": "string", "description": "Lyzr's business-hours timezone" },
+                    "lead_timezone": { "type": "string", "nullable": true, "description": "The timezone the slots were filtered to" },
+                    "slots": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "start": { "type": "string", "format": "date-time", "description": "UTC ISO timestamp. Pass this exact value to bookDemo." },
+                          "end": { "type": "string", "format": "date-time" },
+                          "start_local": { "type": "string", "description": "Human-readable start in the prospect's timezone. Say this one aloud, e.g. 'Tuesday 22 September at 9am BST'." },
+                          "end_local": { "type": "string" }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "description": "Invalid timezone or parameters" },
+          "502": { "description": "Calendar could not be read. Apologise and offer to email a booking link; do not guess a time." }
+        }
+      }
+    },
+    "/book-demo": {
+      "post": {
+        "operationId": "bookDemo",
+        "summary": "Book a demo slot for the prospect",
+        "description": "Creates the demo on the Lyzr demo calendar with a Google Meet link and emails the invite to the prospect. Use a start value returned by findDemoSlots. If the prospect already has an upcoming demo, the existing one is returned (already_booked: true) and nothing new is created - tell them the time they already have. If the slot was taken meanwhile you get error slot_taken: call findDemoSlots again and offer another time.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["lead_email", "start"],
+                "properties": {
+                  "lead_email": { "type": "string", "format": "email", "description": "Prospect's email address from the call context. The invite is sent here." },
+                  "lead_name": { "type": "string", "description": "Prospect's full name" },
+                  "company": { "type": "string", "description": "Prospect's company" },
+                  "phone": { "type": "string", "description": "Prospect's phone number in E.164, from the call context" },
+                  "start": { "type": "string", "format": "date-time", "description": "Exact start value from a findDemoSlots slot (UTC ISO 8601)." },
+                  "duration_minutes": { "type": "integer", "default": 30 },
+                  "notes": { "type": "string", "description": "2-3 sentences: the prospect's use case, what they want to see in the demo, and any specific requests. This is shown to the Lyzr AE." }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Demo booked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": { "type": "boolean" },
+                    "already_booked": { "type": "boolean", "description": "true means the prospect already had a demo; event is that existing one" },
+                    "event": {
+                      "type": "object",
+                      "properties": {
+                        "id": { "type": "string" },
+                        "summary": { "type": "string" },
+                        "start": { "type": "string", "description": "Start time with timezone offset" },
+                        "end": { "type": "string" },
+                        "meet_link": { "type": "string", "nullable": true, "description": "Google Meet link, also in the emailed invite" },
+                        "owner": { "type": "string", "nullable": true, "description": "The Lyzr person who will run the demo, if known" }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "200": { "description": "Prospect already had an upcoming demo; existing event returned" },
+          "409": { "description": "slot_taken (offer another slot) or slot_in_past" },
+          "502": { "description": "Booking failed. Apologise and offer to email a booking link." }
+        }
+      }
+    }
+  }
+}

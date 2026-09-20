@@ -379,8 +379,8 @@ has not declined. Title and name are ignored.
 ### Voice agent: booking through this backend
 
 Replace the agent's Composio `GOOGLECALENDAR_FIND_FREE_SLOTS` /
-`GOOGLECALENDAR_CREATE_EVENT` actions with two HTTP tools, both with header
-`Authorization: Bearer <SUPERFLOW_SHARED_SECRET>`:
+`GOOGLECALENDAR_CREATE_EVENT` actions (detach both) with one custom OpenAPI
+tool set whose Default Headers carry `Authorization: Bearer <SUPERFLOW_SHARED_SECRET>`:
 
 **Find slots** — `POST https://<RAILWAY_DOMAIN>/demo-slots`
 ```jsonc
@@ -418,8 +418,14 @@ as attendees, a Google Meet link, and `sendUpdates=all` so the lead receives
 the invite. Re-booking a lead who already has an upcoming demo returns that
 event instead of creating a second one.
 
-After switching the agent's tools, set `LYZR_REQUIRED_AGENT_TOOLS=/demo-slots,/book-demo`
-so the pre-dial gate checks for the new tools instead of the Composio names.
+After switching the agent's tools, point the pre-dial gate at the names
+Lyzr Studio generated for the tool set (`openapi-<toolset>-<operationId>`,
+visible in the agent's tool list), e.g.
+`LYZR_REQUIRED_AGENT_TOOLS=openapi-demobooking-findDemoSlots,openapi-demobooking-bookDemo`.
+The gate matches these as substrings of the saved agent config, so the URL
+paths would not work. The spec to paste into Studio is
+[`docs/lyzr-booking-tool.openapi.json`](docs/lyzr-booking-tool.openapi.json);
+put the bearer secret in the tool set's Default Headers, never in the spec.
 
 ### Optional server-side safety net
 
