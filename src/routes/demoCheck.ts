@@ -3,11 +3,21 @@ import { z } from "zod";
 import type { Env } from "../config/env.js";
 import type { DemoBookingChecker } from "../google/calendar.js";
 import { requireSuperflowAuth } from "./calls.js";
+import { impersonationDomain } from "../config/env.js";
 import { AppError, toAppError } from "../utils/errors.js";
 
 const requestSchema = z.object({
   lead_email: z.string().trim().toLowerCase().email("lead_email must be a valid address"),
   lead_name: z.string().trim().optional(),
+  /** Assigned AE. Their calendar is checked alongside the shared one. */
+  ae_email: z
+    .string()
+    .trim()
+    .toLowerCase()
+    .email("ae_email must be a valid address")
+    .optional()
+    .or(z.literal("").transform(() => undefined))
+    .or(z.null().transform(() => undefined)),
 });
 
 export interface DemoCheckRoutesDeps {
@@ -49,7 +59,15 @@ export function registerDemoCheckRoutes(app: FastifyInstance, deps: DemoCheckRou
     if (!parsed.success) {
       return fail(reply, new AppError("invalid_request", "lead_email is required and must be a valid email", 400), null);
     }
-    const { lead_email } = parsed.data;
+    const { lead_email, ae_email } = parsed.data;
+
+    if (ae_email && !ae_email.endsWith(`@${impersonationDomain(env)}`)) {
+      return fail(
+        reply,
+        new AppError("invalid_request", `ae_email must be an @${impersonationDomain(env)} address`, 400),
+        lead_email,
+      );
+    }
 
     if (!checker) {
       return fail(
@@ -60,12 +78,14 @@ export function registerDemoCheckRoutes(app: FastifyInstance, deps: DemoCheckRou
     }
 
     try {
-      const result = await checker.check(lead_email);
+      const result = await checker.check(lead_email, ae_email);
       return reply.status(200).send({
         success: true,
         already_booked: result.alreadyBooked,
         lead_email,
+        ae_email: ae_email ?? null,
         calendar_id: checker.calendarId,
+        calendars_checked: result.calendarsChecked,
         event: result.event,
       });
     } catch (err) {

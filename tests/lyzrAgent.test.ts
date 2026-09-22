@@ -140,6 +140,7 @@ describe("dynamic variables", () => {
 
   it("covers every variable the base agent references", () => {
     expect(Object.keys(buildDynamicVariables(lead)).sort()).toEqual([
+      "ae_email", "ae_name",
       "call_mode", "company", "email", "first_name", "last_name", "meeting_booked",
       "meeting_end", "meeting_id", "meeting_link", "meeting_owner", "meeting_start",
       "phone", "time_zone", "timezone", "use_case",

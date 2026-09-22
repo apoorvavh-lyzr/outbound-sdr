@@ -50,6 +50,8 @@ function hydrate(row: Record<string, unknown>): CallRecord {
     meeting_end: str(row.meeting_end),
     meeting_link: str(row.meeting_link),
     meeting_owner: str(row.meeting_owner),
+    ae_email: str(row.ae_email),
+    ae_name: str(row.ae_name),
 
     status: String(row.status) as CallStatus,
 
@@ -114,6 +116,8 @@ export class CallRepository {
       meeting_end: lead.meeting_end,
       meeting_link: lead.meeting_link,
       meeting_owner: lead.meeting_owner,
+      ae_email: lead.ae_email,
+      ae_name: lead.ae_name,
       status: "created",
       twilio_call_sid: null,
       twilio_stream_sid: null,

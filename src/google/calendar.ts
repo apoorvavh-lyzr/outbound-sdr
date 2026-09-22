@@ -40,6 +40,8 @@ export interface DemoCheckConfig {
 }
 
 export interface MatchedEvent {
+  /** Which calendar the event was found on. */
+  calendar_id: string;
   id: string;
   summary: string | null;
   start: string | null;
@@ -54,6 +56,8 @@ export interface DemoCheckResult {
   alreadyBooked: boolean;
   event: MatchedEvent | null;
   eventsScanned: number;
+  /** Every calendar consulted, in order. */
+  calendarsChecked: string[];
 }
 
 export interface GoogleAttendee {
@@ -105,29 +109,36 @@ export class GoogleServiceAccountAuth {
     this.key = normalizePrivateKey(config.privateKey);
   }
 
-  async getAccessToken(scope: string, signal?: AbortSignal): Promise<string> {
-    const cached = this.tokens.get(scope);
+  /**
+   * `subject` overrides the default impersonated user, so one service account
+   * can read the shared demo calendar and an individual AE's calendar in the
+   * same request. Tokens are cached per scope+subject.
+   */
+  async getAccessToken(scope: string, signal?: AbortSignal, subject?: string): Promise<string> {
+    const user = subject?.trim().toLowerCase() || this.config.impersonatedUser;
+    const key = `${scope}|${user}`;
+    const cached = this.tokens.get(key);
     if (cached && cached.expiresAt - TOKEN_REFRESH_MARGIN_MS > this.now()) {
       return cached.value;
     }
     // Coalesce concurrent refreshes into one token exchange per scope.
-    let pending = this.inflight.get(scope);
+    let pending = this.inflight.get(key);
     if (!pending) {
-      pending = this.exchange(scope, signal).finally(() => {
-        this.inflight.delete(scope);
+      pending = this.exchange(scope, user, key, signal).finally(() => {
+        this.inflight.delete(key);
       });
-      this.inflight.set(scope, pending);
+      this.inflight.set(key, pending);
     }
     return pending;
   }
 
-  private signAssertion(scope: string): string {
+  private signAssertion(scope: string, subject: string): string {
     const iat = Math.floor(this.now() / 1000);
     const header: Record<string, string> = { alg: "RS256", typ: "JWT" };
     if (this.config.privateKeyId) header.kid = this.config.privateKeyId;
     const claims = {
       iss: this.config.serviceAccountEmail,
-      sub: this.config.impersonatedUser,
+      sub: subject,
       scope,
       aud: TOKEN_URL,
       iat,
@@ -139,10 +150,10 @@ export class GoogleServiceAccountAuth {
     return `${unsigned}.${b64url(signer.sign(this.key))}`;
   }
 
-  private async exchange(scope: string, signal?: AbortSignal): Promise<string> {
+  private async exchange(scope: string, subject: string, key: string, signal?: AbortSignal): Promise<string> {
     let assertion: string;
     try {
-      assertion = this.signAssertion(scope);
+      assertion = this.signAssertion(scope, subject);
     } catch (err) {
       // Never include the key material in the message.
       throw new UpstreamError("calendar_check_failed", "Google private key could not be used for signing", 502, {
@@ -181,13 +192,13 @@ export class GoogleServiceAccountAuth {
     if (!response.ok || !json.access_token) {
       throw new UpstreamError(
         "calendar_check_failed",
-        `Google token exchange failed (${response.status})${json.error ? `: ${json.error}` : ""}`,
+        `Google token exchange failed for ${subject} (${response.status})${json.error ? `: ${json.error}` : ""}`,
         502,
-        { stage: "token", status: response.status, error: json.error, description: json.error_description },
+        { stage: "token", subject, status: response.status, error: json.error, description: json.error_description },
       );
     }
 
-    this.tokens.set(scope, {
+    this.tokens.set(key, {
       value: json.access_token,
       expiresAt: this.now() + (json.expires_in ?? 3600) * 1000,
     });
@@ -239,6 +250,15 @@ export function meetLink(event: GoogleEvent): string | null {
   );
 }
 
+/**
+ * The shared calendar first, then the assigned AE's own calendar when there is
+ * one. De-duplicated, so an AE who *is* the demo mailbox is read once.
+ */
+export function calendarsToCheck(calendarId: string, aeEmail?: string): string[] {
+  const ae = aeEmail?.trim().toLowerCase();
+  return ae && ae !== calendarId.toLowerCase() ? [calendarId, ae] : [calendarId];
+}
+
 export function eventOwner(event: GoogleEvent, calendarId: string, leadEmail: string): string | null {
   const domain = calendarId.split("@")[1]?.toLowerCase();
   const host = event.attendees?.find((a) => {
@@ -284,12 +304,14 @@ export class DemoBookingChecker {
   }
 
   /**
-   * Looks for an upcoming (now → +windowDays) non-cancelled event on the demo
-   * calendar with `leadEmail` as a non-declined attendee. Any failure to get a
-   * definitive answer throws an UpstreamError("calendar_check_failed") - the
-   * caller must NOT interpret that as "not booked".
+   * Looks for an upcoming (now → +windowDays) non-cancelled event with
+   * `leadEmail` as a non-declined attendee, on the shared demo calendar and -
+   * when the lead has been assigned one - the AE's own calendar, since AEs
+   * sometimes book straight from their own. Any failure to get a definitive
+   * answer throws an UpstreamError("calendar_check_failed") - the caller must
+   * NOT interpret that as "not booked".
    */
-  async check(leadEmail: string): Promise<DemoCheckResult> {
+  async check(leadEmail: string, aeEmail?: string): Promise<DemoCheckResult> {
     const email = leadEmail.trim().toLowerCase();
     const startedAt = Date.now();
     const controller = new AbortController();
@@ -297,35 +319,43 @@ export class DemoBookingChecker {
 
     const timeMin = this.now();
     const timeMax = new Date(timeMin.getTime() + this.config.windowDays * 24 * 60 * 60 * 1000);
+    const calendars = calendarsToCheck(this.config.calendarId, aeEmail);
 
     try {
-      const token = await this.auth.getAccessToken(SCOPE_CALENDAR, controller.signal);
-      let pageToken: string | undefined;
       let scanned = 0;
 
-      do {
-        const page = await this.listPage(token, email, timeMin, timeMax, pageToken, controller.signal);
-        for (const event of page.items ?? []) {
-          scanned += 1;
-          if (eventMatchesLead(event, email)) {
-            const matched: MatchedEvent = {
-              id: event.id ?? "",
-              summary: event.summary ?? null,
-              start: eventTime(event.start),
-              end: eventTime(event.end),
-              html_link: event.htmlLink ?? null,
-              meet_link: meetLink(event),
-              owner: eventOwner(event, this.config.calendarId, email),
-            };
-            this.logResult(email, true, matched.id, scanned, startedAt);
-            return { alreadyBooked: true, event: matched, eventsScanned: scanned };
-          }
-        }
-        pageToken = page.nextPageToken;
-      } while (pageToken);
+      for (const calendarId of calendars) {
+        // Each calendar is read as its own owner: the service account
+        // impersonates the AE rather than relying on demos@ having been
+        // granted access to their calendar.
+        const token = await this.auth.getAccessToken(SCOPE_CALENDAR, controller.signal, calendarId);
+        let pageToken: string | undefined;
 
-      this.logResult(email, false, null, scanned, startedAt);
-      return { alreadyBooked: false, event: null, eventsScanned: scanned };
+        do {
+          const page = await this.listPage(calendarId, token, email, timeMin, timeMax, pageToken, controller.signal);
+          for (const event of page.items ?? []) {
+            scanned += 1;
+            if (eventMatchesLead(event, email)) {
+              const matched: MatchedEvent = {
+                calendar_id: calendarId,
+                id: event.id ?? "",
+                summary: event.summary ?? null,
+                start: eventTime(event.start),
+                end: eventTime(event.end),
+                html_link: event.htmlLink ?? null,
+                meet_link: meetLink(event),
+                owner: eventOwner(event, calendarId, email),
+              };
+              this.logResult(email, true, matched.id, scanned, startedAt, calendars, calendarId);
+              return { alreadyBooked: true, event: matched, eventsScanned: scanned, calendarsChecked: calendars };
+            }
+          }
+          pageToken = page.nextPageToken;
+        } while (pageToken);
+      }
+
+      this.logResult(email, false, null, scanned, startedAt, calendars, null);
+      return { alreadyBooked: false, event: null, eventsScanned: scanned, calendarsChecked: calendars };
     } catch (err) {
       const error = controller.signal.aborted
         ? new UpstreamError("calendar_check_failed", `Calendar check timed out after ${this.config.timeoutMs}ms`, 502, {
@@ -340,7 +370,7 @@ export class DemoBookingChecker {
         {
           event: "demo_check_failed",
           lead_email: email,
-          calendar_id: this.config.calendarId,
+          calendars_checked: calendars,
           error: error.message,
           details: error.details,
           duration_ms: Date.now() - startedAt,
@@ -354,6 +384,7 @@ export class DemoBookingChecker {
   }
 
   private async listPage(
+    calendarId: string,
     token: string,
     email: string,
     timeMin: Date,
@@ -373,7 +404,7 @@ export class DemoBookingChecker {
     });
     if (pageToken) params.set("pageToken", pageToken);
 
-    const url = `${CALENDAR_API}/calendars/${encodeURIComponent(this.config.calendarId)}/events?${params}`;
+    const url = `${CALENDAR_API}/calendars/${encodeURIComponent(calendarId)}/events?${params}`;
     const json = await googleJson<EventsListResponse>(
       this.fetchImpl,
       url,
@@ -388,12 +419,21 @@ export class DemoBookingChecker {
     return json;
   }
 
-  private logResult(email: string, booked: boolean, eventId: string | null, scanned: number, startedAt: number) {
+  private logResult(
+    email: string,
+    booked: boolean,
+    eventId: string | null,
+    scanned: number,
+    startedAt: number,
+    calendars: string[],
+    matchedOn: string | null,
+  ) {
     this.logger.info(
       {
         event: "demo_check",
         lead_email: email,
-        calendar_id: this.config.calendarId,
+        calendars_checked: calendars,
+        matched_calendar_id: matchedOn,
         window_days: this.config.windowDays,
         already_booked: booked,
         matched_event_id: eventId,

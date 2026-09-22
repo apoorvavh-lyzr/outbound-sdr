@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
-import { csvList, type Env } from "../config/env.js";
+import { csvList, impersonationDomain, type Env } from "../config/env.js";
 import { isValidTimeZone, type DemoBooker } from "../google/booking.js";
 import { requireSuperflowAuth } from "./calls.js";
 import { AppError, toAppError } from "../utils/errors.js";
@@ -17,6 +17,15 @@ const slotsSchema = z
       .trim()
       .refine(isValidTimeZone, "timezone must be a valid IANA zone, e.g. America/New_York")
       .optional(),
+    /** Assigned AE: their calendar must also be free, and they are invited. */
+    ae_email: z
+      .string()
+      .trim()
+      .toLowerCase()
+      .email("ae_email must be a valid address")
+      .optional()
+      .or(z.literal("").transform(() => undefined))
+      .or(z.null().transform(() => undefined)),
     lead_hours_start: z.number().int().min(0).max(23).default(9),
     lead_hours_end: z.number().int().min(1).max(24).default(18),
   })
@@ -34,6 +43,16 @@ const bookSchema = z.object({
   duration_minutes: z.number().int().min(15).max(180).optional(),
   notes: z.string().trim().max(4000).optional(),
   host_emails: z.array(z.string().trim().toLowerCase().email()).max(5).optional(),
+  /** Assigned AE: their calendar must also be free, and they are invited. */
+  ae_email: z
+    .string()
+    .trim()
+    .toLowerCase()
+    .email("ae_email must be a valid address")
+    .optional()
+    .or(z.literal("").transform(() => undefined))
+    .or(z.null().transform(() => undefined)),
+  ae_name: z.string().trim().max(200).optional(),
 });
 
 /**
@@ -62,7 +81,8 @@ export function normalizeBookingBody(raw: unknown): Record<string, unknown> {
   }
   if (typeof b.duration_minutes === "string" && /^\d+$/.test(b.duration_minutes)) b.duration_minutes = Number(b.duration_minutes);
   b.notes ??= b.description ?? b.agenda ?? b.note;
-  const ours = new Set(["lead_email", "lead_name", "company", "phone", "start", "duration_minutes", "notes", "host_emails"]);
+  b.ae_email ??= b.owner ?? b.assigned_to ?? b.host_email;
+  const ours = new Set(["lead_email", "lead_name", "company", "phone", "start", "duration_minutes", "notes", "host_emails", "ae_email", "ae_name"]);
   for (const k of Object.keys(b)) if (!ours.has(k)) delete b[k];
   return b;
 }
@@ -83,6 +103,16 @@ export function registerBookingRoutes(app: FastifyInstance, deps: BookingRoutesD
 
   const fail = (reply: FastifyReply, err: AppError) =>
     reply.status(err.statusCode).send({ success: false, error: err.code, message: err.message });
+
+  /** Refuses an AE address outside the impersonation domain. */
+  const checkAeDomain = (aeEmail: string | undefined, reply: FastifyReply): boolean => {
+    const domain = impersonationDomain(env);
+    if (aeEmail && !aeEmail.endsWith(`@${domain}`)) {
+      void fail(reply, new AppError("invalid_request", `ae_email must be an @${domain} address`, 400));
+      return false;
+    }
+    return true;
+  };
 
   const guard = (request: FastifyRequest, reply: FastifyReply): DemoBooker | undefined => {
     try {
@@ -107,6 +137,7 @@ export function registerBookingRoutes(app: FastifyInstance, deps: BookingRoutesD
       return fail(reply, new AppError("invalid_request", parsed.error.issues[0]?.message ?? "invalid request", 400));
     }
     const q = parsed.data;
+    if (!checkAeDomain(q.ae_email, reply)) return reply;
     try {
       const lead = q.timezone
         ? { timezone: q.timezone, hoursStart: q.lead_hours_start, hoursEnd: q.lead_hours_end }
@@ -117,10 +148,12 @@ export function registerBookingRoutes(app: FastifyInstance, deps: BookingRoutesD
         durationMinutes: q.duration_minutes,
         limit: q.limit,
         lead,
+        aeEmail: q.ae_email,
       });
       return reply.send({
         success: true,
         calendar_id: b.calendarId,
+        ae_email: q.ae_email ?? null,
         timezone: b.timezone,
         lead_timezone: lead?.timezone ?? null,
         slots,
@@ -145,6 +178,7 @@ export function registerBookingRoutes(app: FastifyInstance, deps: BookingRoutesD
       );
     }
     const r = parsed.data;
+    if (!checkAeDomain(r.ae_email, reply)) return reply;
     try {
       const result = await b.book({
         leadEmail: r.lead_email,
@@ -155,11 +189,14 @@ export function registerBookingRoutes(app: FastifyInstance, deps: BookingRoutesD
         durationMinutes: r.duration_minutes ?? env.DEMO_SLOT_MINUTES,
         notes: r.notes,
         hostEmails: r.host_emails ?? csvList(env.DEMO_HOST_EMAILS),
+        aeEmail: r.ae_email,
+        aeName: r.ae_name,
       });
       return reply.status(result.alreadyBooked ? 200 : 201).send({
         success: true,
         already_booked: result.alreadyBooked,
         lead_email: r.lead_email,
+        ae_email: r.ae_email ?? null,
         calendar_id: b.calendarId,
         event: result.event,
       });

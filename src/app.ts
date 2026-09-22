@@ -91,7 +91,7 @@ export async function buildApp(options: BuildAppOptions): Promise<BuiltApp> {
     demoBookingGuard: demoChecker
       ? async (lead) => {
           // Throws UpstreamError(calendar_check_failed) when indeterminate.
-          const result = await demoChecker.check(lead.email);
+          const result = await demoChecker.check(lead.email, lead.ae_email ?? undefined);
           if (result.alreadyBooked) {
             throw new ConflictError(
               `Lead already has a demo booked (event ${result.event?.id ?? "unknown"}); call refused`,

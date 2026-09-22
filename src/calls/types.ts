@@ -71,6 +71,10 @@ export const leadSchema = z
     meeting_end: emptyToNull,
     meeting_link: emptyToNull,
     meeting_owner: emptyToNull,
+
+    /** Assigned AE, from the lead-scoring endpoint's `owner`. */
+    ae_email: emptyToNull,
+    ae_name: emptyToNull,
   })
   .superRefine((lead, ctx) => {
     if (lead.call_mode === "confirmation" && !lead.meeting_booked) {
@@ -127,6 +131,9 @@ export interface CallRecord {
   meeting_end: string | null;
   meeting_link: string | null;
   meeting_owner: string | null;
+
+  ae_email: string | null;
+  ae_name: string | null;
 
   status: CallStatus;
 

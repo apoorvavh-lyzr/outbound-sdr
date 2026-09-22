@@ -4,6 +4,7 @@ import { ConflictError, UpstreamError } from "../utils/errors.js";
 import {
   CALENDAR_API,
   DemoBookingChecker,
+  calendarsToCheck,
   SCOPE_CALENDAR,
   eventOwner,
   eventTime,
@@ -48,6 +49,8 @@ export interface SlotQuery {
   durationMinutes?: number;
   limit: number;
   lead?: LeadWindow;
+  /** Assigned AE: their calendar must be free too, when there is one. */
+  aeEmail?: string;
 }
 
 export interface Slot {
@@ -66,8 +69,11 @@ export interface BookingRequest {
   start: Date;
   durationMinutes: number;
   notes?: string;
-  /** Extra Lyzr attendees, e.g. the AE who runs the demo. */
+  /** Extra Lyzr attendees, e.g. a standing host on every demo. */
   hostEmails?: string[];
+  /** The assigned AE: checked for conflicts and invited to the event. */
+  aeEmail?: string;
+  aeName?: string;
 }
 
 export type BookedEvent = MatchedEvent;
@@ -233,7 +239,13 @@ export class DemoBooker {
     return run(controller.signal).finally(() => clearTimeout(timer));
   }
 
-  private async freeBusy(token: string, from: Date, to: Date, signal: AbortSignal): Promise<Interval[]> {
+  /**
+   * Busy intervals across every calendar that must be free - the shared demo
+   * calendar plus the assigned AE's. A calendar we cannot read is an error,
+   * never an empty (= "all free") result.
+   */
+  private async freeBusy(token: string, from: Date, to: Date, signal: AbortSignal, aeEmail?: string): Promise<Interval[]> {
+    const calendars = calendarsToCheck(this.config.calendarId, aeEmail);
     const json = await googleJson<FreeBusyResponse>(
       this.fetchImpl,
       `${CALENDAR_API}/freeBusy`,
@@ -244,21 +256,26 @@ export class DemoBooker {
           timeMin: from.toISOString(),
           timeMax: to.toISOString(),
           timeZone: "UTC",
-          items: [{ id: this.config.calendarId }],
+          items: calendars.map((id) => ({ id })),
         }),
         signal,
       },
       "freebusy.query",
       "slot_lookup_failed",
     );
-    const cal = json.calendars?.[this.config.calendarId];
-    if (!cal || (cal.errors && cal.errors.length > 0)) {
-      throw new UpstreamError("slot_lookup_failed", "Google could not read the demo calendar's availability", 502, {
-        stage: "freebusy.query",
-        errors: cal?.errors,
-      });
+    const busy: Interval[] = [];
+    for (const id of calendars) {
+      const cal = json.calendars?.[id];
+      if (!cal || (cal.errors && cal.errors.length > 0)) {
+        throw new UpstreamError("slot_lookup_failed", `Google could not read availability for ${id}`, 502, {
+          stage: "freebusy.query",
+          calendar_id: id,
+          errors: cal?.errors,
+        });
+      }
+      for (const b of cal.busy ?? []) busy.push({ start: Date.parse(b.start), end: Date.parse(b.end) });
     }
-    return (cal.busy ?? []).map((b) => ({ start: Date.parse(b.start), end: Date.parse(b.end) }));
+    return busy;
   }
 
   /** Open demo slots on the shared calendar. Never falls back to "everything is free". */
@@ -271,12 +288,12 @@ export class DemoBooker {
 
     return this.withTimeout(async (signal) => {
       const token = await this.checker.auth.getAccessToken(SCOPE_CALENDAR, signal);
-      const busy = await this.freeBusy(token, from, to, signal);
+      const busy = await this.freeBusy(token, from, to, signal, query.aeEmail);
       const slots = computeFreeSlots(this.config, busy, from, query.days, duration, earliest, query.limit, query.lead);
       this.logger.info(
         {
           event: "demo_slots",
-          calendar_id: this.config.calendarId,
+          calendars: calendarsToCheck(this.config.calendarId, query.aeEmail),
           from: from.toISOString(),
           days: query.days,
           lead_timezone: query.lead?.timezone ?? null,
@@ -306,7 +323,7 @@ export class DemoBooker {
     }
 
     // The check throws (never returns "unknown") on any calendar failure.
-    const existing = await this.checker.check(leadEmail);
+    const existing = await this.checker.check(leadEmail, req.aeEmail);
     if (existing.alreadyBooked && existing.event) {
       this.logger.info(
         { event: "demo_book_idempotent", lead_email: leadEmail, matched_event_id: existing.event.id },
@@ -318,14 +335,18 @@ export class DemoBooker {
     return this.withTimeout(async (signal) => {
       const token = await this.checker.auth.getAccessToken(SCOPE_CALENDAR, signal);
 
-      const busy = await this.freeBusy(token, start, end, signal);
+      const busy = await this.freeBusy(token, start, end, signal, req.aeEmail);
       if (busy.some((b) => start.getTime() < b.end && end.getTime() > b.start)) {
         throw new UpstreamError("slot_taken", "The demo calendar is busy at the requested time", 409);
       }
 
+      // The AE is an attendee rather than the organizer: the event lives on the
+      // shared calendar so it stays the single source of truth, and reaches the
+      // AE's own calendar through the invitation.
       const attendees = [
         { email: leadEmail, displayName: req.leadName },
-        ...(req.hostEmails ?? []).map((email) => ({ email })),
+        ...(req.aeEmail ? [{ email: req.aeEmail, displayName: req.aeName }] : []),
+        ...(req.hostEmails ?? []).filter((e) => e !== req.aeEmail).map((email) => ({ email })),
       ];
       const who = req.leadName ?? leadEmail;
       const description = [
@@ -355,7 +376,13 @@ export class DemoBooker {
             guestsCanSeeOtherGuests: false,
             conferenceData: { createRequest: { requestId: randomUUID(), conferenceSolutionKey: { type: "hangoutsMeet" } } },
             reminders: { useDefault: true },
-            extendedProperties: { private: { lyzr_lead_email: leadEmail, lyzr_source: "outbound-voice" } },
+            extendedProperties: {
+              private: {
+                lyzr_lead_email: leadEmail,
+                lyzr_source: "outbound-voice",
+                ...(req.aeEmail ? { lyzr_ae_email: req.aeEmail } : {}),
+              },
+            },
           }),
           signal,
         },
@@ -364,6 +391,7 @@ export class DemoBooker {
       );
 
       const event: BookedEvent = {
+        calendar_id: this.config.calendarId,
         id: created.id ?? "",
         summary: created.summary ?? null,
         start: eventTime(created.start),
@@ -373,7 +401,15 @@ export class DemoBooker {
         owner: eventOwner(created, this.config.calendarId, leadEmail),
       };
       this.logger.info(
-        { event: "demo_booked", lead_email: leadEmail, calendar_id: this.config.calendarId, event_id: event.id, start: event.start, end: event.end },
+        {
+          event: "demo_booked",
+          lead_email: leadEmail,
+          ae_email: req.aeEmail ?? null,
+          calendar_id: this.config.calendarId,
+          event_id: event.id,
+          start: event.start,
+          end: event.end,
+        },
         "demo booked on shared calendar",
       );
       return { alreadyBooked: false, event };

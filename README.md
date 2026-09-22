@@ -310,7 +310,8 @@ Authorization: Bearer <SUPERFLOW_SHARED_SECRET>      (the same secret HTTP Reque
 Content-Type:  application/json
 
 { "lead_email": "{{ $('Trigger').json.email }}",
-  "lead_name":  "{{ $('Trigger').json.first_name }}" }
+  "lead_name":  "{{ $('Trigger').json.first_name }}",
+  "ae_email":   "{{ $('Enrich').json.owner }}" }
 ```
 
 Set the node to **continue on error / return the response body on non-2xx**
@@ -346,6 +347,27 @@ that reason, but "is true" is still the clearer choice.
 
 **5. Code 1 / Code 2 / both HTTP Request nodes stay exactly as they are** —
 the field names above are the ones sections O and P already consume.
+
+### Routing to the assigned AE
+
+The lead-scoring endpoint (`/api/hubspot/enrich-and-assign`) returns the
+assigned AE as `owner`, e.g. `bhavana.bolgam@lyzr.ai`. Pass that through as
+`ae_email` and every calendar operation honours it:
+
+| Endpoint | With `ae_email` |
+|---|---|
+| `/check-demo-booking` | The lead counts as booked if they are a non-declined attendee on **either** `demos@lyzr.ai` or the AE's own calendar. The response lists `calendars_checked` and the matched `event.calendar_id`. |
+| `/demo-slots` | A slot must be free on **both** calendars. |
+| `/book-demo` | Idempotency covers both; the event is still created on `demos@` with the **AE invited**, so the shared calendar stays the single source of truth and the AE gets it via the invitation. |
+| `/api/call` | Accepts `ae_email` / `ae_name` and passes them to the agent, which names the AE on the call and forwards `ae_email` to its tools. |
+
+The service account impersonates each calendar's own owner, so no AE has to
+share their calendar with `demos@`. Domain-wide delegation therefore has to
+cover the whole domain, not just the demo mailbox. Two guardrails: `ae_email`
+must be on the same domain as `GOOGLE_IMPERSONATED_USER` (otherwise `400`),
+and an AE calendar that cannot be read is `calendar_check_failed` - never a
+silent fallback to checking `demos@` alone, which would risk calling a lead
+who is already booked. Omitting `ae_email` keeps the original behaviour.
 
 ### `/check-demo-booking` contract
 

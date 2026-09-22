@@ -7,6 +7,7 @@ import { parseEnv, type Env } from "../src/config/env.js";
 import { createDatabase, type Database } from "../src/db/client.js";
 import {
   DemoBookingChecker,
+  calendarsToCheck,
   GoogleServiceAccountAuth,
   eventMatchesLead,
   normalizePrivateKey,
@@ -23,12 +24,24 @@ const ESCAPED_PEM = PEM.replace(/\n/g, "\\n");
 const SECRET = "superflow-shared-secret";
 const CAL = "demos@lyzr.ai";
 const silent = pino({ level: "silent" });
+/**
+ * A Monday comfortably in the future, during British Summer Time so the
+ * London expectations hold. Route tests must not pin a date that today can
+ * drift past, or every slot is filtered out as being in the past.
+ */
+const FUTURE_MONDAY = "2027-09-20";
 
 // ---------------------------------------------------------------------------
 // Stubbed Google: token endpoint + events.list + freeBusy + events.insert
 // ---------------------------------------------------------------------------
 interface GoogleStub {
   events: unknown[];
+  /** Events per calendar id; falls back to `events` for the demo calendar. */
+  eventsByCalendar: Record<string, unknown[]>;
+  busyByCalendar: Record<string, { start: string; end: string }[]>;
+  freeBusyErrors: Record<string, unknown[]>;
+  subjects: string[];
+  freeBusyItems: string[][];
   busy: { start: string; end: string }[];
   tokenStatus: number;
   listStatus: number;
@@ -42,6 +55,11 @@ interface GoogleStub {
 function makeStub(overrides: Partial<GoogleStub> = {}): GoogleStub & { fetch: FetchLike } {
   const stub: GoogleStub = {
     events: [],
+    eventsByCalendar: {},
+    busyByCalendar: {},
+    freeBusyErrors: {},
+    subjects: [],
+    freeBusyItems: [],
     busy: [],
     tokenStatus: 200,
     listStatus: 200,
@@ -63,22 +81,32 @@ function makeStub(overrides: Partial<GoogleStub> = {}): GoogleStub & { fetch: Fe
       const assertion = String(init?.body).match(/assertion=([^&]+)/)?.[1] ?? "";
       const claims = JSON.parse(Buffer.from(decodeURIComponent(assertion).split(".")[1]!, "base64url").toString());
       stub.scopes.push(claims.scope);
-      expect(claims.sub).toBe(CAL);
+      stub.subjects.push(claims.sub);
       if (stub.tokenStatus !== 200) return json(stub.tokenStatus, { error: "unauthorized_client" });
       return json(200, { access_token: "tok", expires_in: 3600 });
     }
     if (url.includes("/freeBusy")) {
-      return json(200, { calendars: { [CAL]: { busy: stub.busy } } });
+      const items = (JSON.parse(String(init?.body)).items as { id: string }[]).map((i) => i.id);
+      stub.freeBusyItems.push(items);
+      const calendars: Record<string, unknown> = {};
+      for (const id of items) {
+        calendars[id] = stub.freeBusyErrors[id]
+          ? { errors: stub.freeBusyErrors[id] }
+          : { busy: stub.busyByCalendar[id] ?? (id === CAL ? stub.busy : []) };
+      }
+      return json(200, { calendars });
     }
     if (url.includes("/events?") && init?.method === undefined) {
       expect(init?.headers).toMatchObject({ authorization: "Bearer tok" });
       stub.listCalls.push(url);
       if (stub.listStatus !== 200) return json(stub.listStatus, { error: { message: "nope" } });
+      const calId = decodeURIComponent(url.split("/calendars/")[1]!.split("/events")[0]!);
+      const events = stub.eventsByCalendar[calId] ?? (calId === CAL ? stub.events : []);
       const page = new URL(url).searchParams.get("pageToken");
-      if (!page && stub.events.length > 1) {
-        return json(200, { items: [stub.events[0]], nextPageToken: "p2" });
+      if (!page && events.length > 1) {
+        return json(200, { items: [events[0]], nextPageToken: "p2" });
       }
-      return json(200, { items: page ? stub.events.slice(1) : stub.events });
+      return json(200, { items: page ? events.slice(1) : events });
     }
     if (url.includes("/events?conferenceDataVersion") && init?.method === "POST") {
       const body = JSON.parse(String(init.body));
@@ -343,7 +371,7 @@ describe("POST /demo-slots and /book-demo", () => {
   it("lists open slots using the calendar scope", async () => {
     const stub = makeStub();
     await build(stub);
-    const res = await post("/demo-slots", { from: "2026-09-21T00:00:00Z", days: 1, limit: 3 });
+    const res = await post("/demo-slots", { from: `${FUTURE_MONDAY}T00:00:00Z`, days: 1, limit: 3 });
     expect(res.statusCode).toBe(200);
     expect(res.json().slots).toHaveLength(3);
     expect(res.json().timezone).toBe("Asia/Kolkata");
@@ -438,10 +466,10 @@ describe("lead-timezone slot filtering", () => {
     expect(bad.statusCode).toBe(400);
     expect(bad.json().message).toContain("IANA");
 
-    const ok = await post("/demo-slots", { from: "2026-09-21T00:00:00Z", days: 1, limit: 50, timezone: "Europe/London" });
+    const ok = await post("/demo-slots", { from: `${FUTURE_MONDAY}T00:00:00Z`, days: 1, limit: 50, timezone: "Europe/London" });
     expect(ok.statusCode).toBe(200);
     expect(ok.json().lead_timezone).toBe("Europe/London");
-    expect(ok.json().slots[0]).toMatchObject({ start: "2026-09-21T08:00:00.000Z" });
+    expect(ok.json().slots[0]).toMatchObject({ start: `${FUTURE_MONDAY}T08:00:00.000Z` });
     expect(ok.json().slots[0].start_local).toBeTruthy();
   });
 });
@@ -502,5 +530,120 @@ describe("bookDemo accepts the singular Composio-style names", () => {
     const body = stub.inserted[0] as Record<string, unknown>;
     expect(body.attendees).toEqual([{ email: "apoorva.vh@lyzr.ai", displayName: undefined }]);
     expect(body.end).toEqual({ dateTime: "2099-09-21T09:30:00.000Z", timeZone: "UTC" });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Assigned AE: their calendar is consulted alongside the shared one
+// ---------------------------------------------------------------------------
+const AE = "bhavana.bolgam@lyzr.ai";
+
+describe("calendarsToCheck", () => {
+  it("adds the AE and de-duplicates the demo mailbox", () => {
+    expect(calendarsToCheck(CAL, AE)).toEqual([CAL, AE]);
+    expect(calendarsToCheck(CAL, undefined)).toEqual([CAL]);
+    expect(calendarsToCheck(CAL, "  DEMOS@LYZR.AI ")).toEqual([CAL]);
+  });
+});
+
+describe("POST /check-demo-booking with ae_email", () => {
+  it("finds a booking that exists only on the AE's calendar", async () => {
+    const stub = makeStub({ eventsByCalendar: { [CAL]: [], [AE]: [event({ id: "ae-evt" })] } });
+    await build(stub);
+    const res = await post("/check-demo-booking", { lead_email: "john@company.com", ae_email: AE });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({
+      already_booked: true, ae_email: AE,
+      calendars_checked: [CAL, AE],
+      event: { id: "ae-evt", calendar_id: AE },
+    });
+    // Each calendar is read as its own owner.
+    expect(stub.subjects).toEqual([CAL, AE]);
+  });
+
+  it("checks only the shared calendar when no AE is assigned", async () => {
+    const stub = makeStub();
+    await build(stub);
+    const res = await post("/check-demo-booking", { lead_email: "john@company.com", ae_email: null });
+    expect(res.json().calendars_checked).toEqual([CAL]);
+    expect(stub.subjects).toEqual([CAL]);
+  });
+
+  it("fails closed when the AE's calendar cannot be read", async () => {
+    const stub = makeStub({ listStatus: 403 });
+    await build(stub);
+    const res = await post("/check-demo-booking", { lead_email: "john@company.com", ae_email: AE });
+    expect(res.statusCode).toBe(502);
+    expect(res.json()).toMatchObject({ success: false, already_booked: null, error: "calendar_check_failed" });
+  });
+
+  it("refuses an AE outside the impersonation domain", async () => {
+    await build(makeStub());
+    const res = await post("/check-demo-booking", { lead_email: "john@company.com", ae_email: "someone@evil.com" });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().message).toContain("@lyzr.ai");
+  });
+});
+
+describe("/demo-slots and /book-demo with ae_email", () => {
+  it("treats the AE's busy time as unavailable", async () => {
+    const stub = makeStub({
+      busyByCalendar: { [CAL]: [], [AE]: [{ start: `${FUTURE_MONDAY}T04:30:00Z`, end: `${FUTURE_MONDAY}T06:00:00Z` }] },
+    });
+    await build(stub);
+    const res = await post("/demo-slots", { from: `${FUTURE_MONDAY}T00:00:00Z`, days: 1, limit: 3, ae_email: AE });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().ae_email).toBe(AE);
+    expect(stub.freeBusyItems[0]).toEqual([CAL, AE]);
+    // The 04:30 and 05:30 slots are gone; the first free one starts at 06:00Z.
+    expect(res.json().slots[0].start).toBe(`${FUTURE_MONDAY}T06:00:00.000Z`);
+  });
+
+  it("invites the AE and records them on the event", async () => {
+    const stub = makeStub();
+    await build(stub);
+    const res = await post("/book-demo", {
+      lead_email: "john@company.com", lead_name: "John Smith",
+      start: "2099-09-24T10:00:00Z", ae_email: AE, ae_name: "Bhavana Bolgam",
+    });
+    expect(res.statusCode).toBe(201);
+    const body = stub.inserted[0] as Record<string, unknown>;
+    expect(body.attendees).toEqual([
+      { email: "john@company.com", displayName: "John Smith" },
+      { email: AE, displayName: "Bhavana Bolgam" },
+    ]);
+    expect((body.extendedProperties as { private: Record<string, string> }).private.lyzr_ae_email).toBe(AE);
+  });
+
+  it("does not double-book a lead already on the AE's calendar", async () => {
+    const stub = makeStub({ eventsByCalendar: { [CAL]: [], [AE]: [event({ id: "ae-evt" })] } });
+    await build(stub);
+    const res = await post("/book-demo", { lead_email: "john@company.com", start: "2099-09-24T10:00:00Z", ae_email: AE });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ already_booked: true, event: { id: "ae-evt", calendar_id: AE } });
+    expect(stub.inserted).toHaveLength(0);
+  });
+
+  it("never offers slots when the AE's availability is unreadable", async () => {
+    const stub = makeStub({ freeBusyErrors: { [AE]: [{ domain: "global", reason: "notFound" }] } });
+    await build(stub);
+    const res = await post("/demo-slots", { days: 1, ae_email: AE });
+    expect(res.statusCode).toBe(502);
+    expect(res.json().error).toBe("slot_lookup_failed");
+  });
+
+  it("refuses an AE outside the impersonation domain", async () => {
+    await build(makeStub());
+    expect((await post("/demo-slots", { ae_email: "x@evil.com" })).statusCode).toBe(400);
+    expect((await post("/book-demo", { lead_email: "a@b.com", start: "2099-09-24T10:00:00Z", ae_email: "x@evil.com" })).statusCode).toBe(400);
+  });
+});
+
+describe("aeNameFromEmail", () => {
+  it("derives a display name only as a fallback", async () => {
+    const { aeNameFromEmail } = await import("../src/lyzr/contextStrategy.js");
+    expect(aeNameFromEmail("bhavana.bolgam@lyzr.ai")).toBe("Bhavana Bolgam");
+    expect(aeNameFromEmail("priya@lyzr.ai")).toBe("Priya");
+    expect(aeNameFromEmail(null)).toBe("");
   });
 });

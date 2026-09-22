@@ -50,6 +50,10 @@ export function buildDynamicVariables(lead: Lead): Record<string, string> {
     meeting_end: text(lead.meeting_end),
     meeting_link: text(lead.meeting_link),
     meeting_owner: text(lead.meeting_owner),
+    // The assigned AE: the agent names them on the call and passes ae_email
+    // to findDemoSlots / bookDemo so their calendar is honoured.
+    ae_email: text(lead.ae_email),
+    ae_name: text(lead.ae_name ?? aeNameFromEmail(lead.ae_email)),
   };
 }
 
@@ -106,6 +110,17 @@ export function applyOutboundConversationStart(
  * so the base agent's own greeting is carried through. Omitting it is rejected,
  * and an agent told to speak first with nothing to say stays silent.
  */
+/** "bhavana.bolgam@lyzr.ai" -> "Bhavana Bolgam". Only used when no name was supplied. */
+export function aeNameFromEmail(email: string | null | undefined): string {
+  const local = email?.split("@")[0];
+  if (!local) return "";
+  return local
+    .split(/[._-]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
 export function buildSessionConfig(
   baseConfig: Record<string, unknown>,
   lead: Lead,

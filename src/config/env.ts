@@ -244,6 +244,15 @@ export function csvList(value: string | undefined): string[] {
     .filter(Boolean);
 }
 
+/**
+ * The domain the service account may impersonate. Callers hand us an AE
+ * address; without this guard SuperFlow could ask us to read any mailbox
+ * Google would let the delegation reach.
+ */
+export function impersonationDomain(env: Env): string {
+  return env.GOOGLE_IMPERSONATED_USER.split("@")[1]?.toLowerCase() ?? "";
+}
+
 /** Agent tool identifiers the pre-dial gate insists on. */
 export function requiredAgentTools(env: Env): string[] {
   return csvList(env.LYZR_REQUIRED_AGENT_TOOLS);

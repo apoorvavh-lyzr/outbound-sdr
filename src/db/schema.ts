@@ -23,6 +23,8 @@ CREATE TABLE IF NOT EXISTS calls (
   meeting_end               TEXT,
   meeting_link              TEXT,
   meeting_owner             TEXT,
+  ae_email                  TEXT,
+  ae_name                   TEXT,
 
   status                    TEXT NOT NULL,
 
@@ -87,6 +89,8 @@ CREATE TABLE IF NOT EXISTS calls (
   meeting_end               TEXT,
   meeting_link              TEXT,
   meeting_owner             TEXT,
+  ae_email                  TEXT,
+  ae_name                   TEXT,
 
   status                    TEXT NOT NULL,
 
@@ -138,11 +142,15 @@ CREATE INDEX IF NOT EXISTS callback_attempts_call_id_idx ON callback_attempts (c
  */
 export const POSTGRES_ALTERS = [
   "ALTER TABLE calls ADD COLUMN IF NOT EXISTS post_call_callback_sent_at TIMESTAMPTZ",
+  "ALTER TABLE calls ADD COLUMN IF NOT EXISTS ae_email TEXT",
+  "ALTER TABLE calls ADD COLUMN IF NOT EXISTS ae_name TEXT",
 ];
 
 /** SQLite has no IF NOT EXISTS for ADD COLUMN; a duplicate-column error is expected and ignored. */
 export const SQLITE_ALTERS = [
   "ALTER TABLE calls ADD COLUMN post_call_callback_sent_at TEXT",
+  "ALTER TABLE calls ADD COLUMN ae_email TEXT",
+  "ALTER TABLE calls ADD COLUMN ae_name TEXT",
 ];
 
 export const CALL_COLUMNS = [
@@ -162,6 +170,8 @@ export const CALL_COLUMNS = [
   "meeting_end",
   "meeting_link",
   "meeting_owner",
+  "ae_email",
+  "ae_name",
   "status",
   "twilio_call_sid",
   "twilio_stream_sid",
