@@ -8,7 +8,7 @@ DO NOT leave TODOs.
 DO NOT leave placeholder audio functions.
 DO NOT provide pseudo-code instead of working code.
 DO NOT silently invent undocumented external API behavior.
-DO NOT hardcode secrets.
+DO NOT hardcode secrets. 
 DO NOT expose credentials in logs.
 DO NOT mutate my existing production/base Lyzr Voice Agent.
 DO NOT place a real phone call during automated tests.
