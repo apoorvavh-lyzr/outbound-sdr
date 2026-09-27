@@ -164,11 +164,21 @@ export async function buildApp(options: BuildAppOptions): Promise<BuiltApp> {
   registerLeadRoutes(app, { env });
   registerCallRoutes(app, { env, service, transcripts: createTranscriptProvider(env) });
   registerDemoCheckRoutes(app, { env, checker: demoChecker });
-  registerBookingRoutes(app, { env, booker: demoChecker ? createDemoBooker(env, demoChecker, logger) : undefined });
+  const demoBooker = demoChecker ? createDemoBooker(env, demoChecker, logger) : undefined;
+  registerBookingRoutes(app, { env, booker: demoBooker });
   registerTwilioStatusRoute(app, env, service);
 
   const scheduler = demoChecker
-    ? new CallScheduler({ env, repository, service, checker: demoChecker, logger })
+    ? new CallScheduler({
+        env,
+        repository,
+        service,
+        checker: demoChecker,
+        booker: demoBooker,
+        // resolveOwner is supplied once a HubSpot token is configured; without
+        // it the owner recorded at booking time simply stands.
+        logger,
+      })
     : undefined;
   if (env.ENABLE_CALL_SCHEDULER && !scheduler) {
     logger.warn(

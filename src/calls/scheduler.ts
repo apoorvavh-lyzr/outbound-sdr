@@ -12,6 +12,7 @@ import {
   type GoogleAttendee,
   type GoogleEvent,
 } from "../google/calendar.js";
+import type { DemoBooker } from "../google/booking.js";
 import type { CallService } from "./service.js";
 import { leadSchema, type CallMode, type Lead } from "./types.js";
 
@@ -35,11 +36,20 @@ interface ProspectEvent {
   end: string | null;
 }
 
+/**
+ * Who currently owns this lead. Backed by HubSpot in production; leaving it
+ * undefined simply means the owner recorded when the demo was booked stands.
+ */
+export type OwnerResolver = (leadEmail: string) => Promise<{ email: string; name?: string } | null>;
+
 export interface SchedulerDeps {
   env: Env;
   repository: CallRepository;
   service: CallService;
   checker: DemoBookingChecker;
+  /** Needed to add a newly assigned owner to an existing demo. */
+  booker?: DemoBooker;
+  resolveOwner?: OwnerResolver;
   logger: Logger;
   fetchImpl?: typeof fetch;
   now?: () => Date;
@@ -50,6 +60,7 @@ export interface SweepResult {
   remindersPlaced: number;
   rescheduleCallsPlaced: number;
   skipped: number;
+  ownersAdded: number;
 }
 
 export class CallScheduler {
@@ -75,7 +86,7 @@ export class CallScheduler {
   }
 
   async sweep(): Promise<SweepResult> {
-    const result: SweepResult = { eventsScanned: 0, remindersPlaced: 0, rescheduleCallsPlaced: 0, skipped: 0 };
+    const result: SweepResult = { eventsScanned: 0, remindersPlaced: 0, rescheduleCallsPlaced: 0, skipped: 0, ownersAdded: 0 };
     if (!this.enabled) return result;
 
     const events = await this.upcomingProspectEvents();
@@ -91,6 +102,9 @@ export class CallScheduler {
           continue;
         }
         if (this.isReminderDue(item.start)) {
+          // A lead reassigned since the booking (SDR to AE, say) is added to
+          // the meeting before we remind anyone about it.
+          if (await this.syncOwner(item)) result.ownersAdded += 1;
           if (await this.place(item, "reminder")) result.remindersPlaced += 1;
           else result.skipped += 1;
         }
@@ -115,6 +129,54 @@ export class CallScheduler {
     const { REMINDER_LEAD_MINUTES, REMINDER_GRACE_MINUTES } = this.deps.env;
     const minutesAway = (Date.parse(startIso) - this.now.getTime()) / 60_000;
     return minutesAway <= REMINDER_LEAD_MINUTES && minutesAway >= REMINDER_GRACE_MINUTES;
+  }
+
+  /**
+   * Adds the lead's current owner to the meeting if they are not on it yet.
+   * Returns true only when the event was actually changed. Never removes the
+   * previous owner: they may already have prepared for the call.
+   */
+  private async syncOwner(item: ProspectEvent): Promise<boolean> {
+    const { booker, resolveOwner } = this.deps;
+    const eventId = item.event.id;
+    const prospectEmail = item.prospect.email?.trim().toLowerCase();
+    if (!booker || !resolveOwner || !eventId || !prospectEmail) return false;
+
+    let owner: { email: string; name?: string } | null = null;
+    try {
+      owner = await resolveOwner(prospectEmail);
+    } catch (err) {
+      // An owner lookup failure must not stop the reminder going out.
+      this.log.warn(
+        { event: "scheduler_owner_lookup_failed", meeting_id: eventId, err: err instanceof Error ? err.message : String(err) },
+        "could not resolve the current owner",
+      );
+      return false;
+    }
+    if (!owner?.email) return false;
+
+    const current = owner.email.trim().toLowerCase();
+    const onEvent = (item.event.attendees ?? []).some((a) => a.email?.trim().toLowerCase() === current);
+    if (onEvent) return false;
+
+    try {
+      const { added } = await booker.addAttendee(eventId, current, owner.name);
+      if (added) {
+        this.log.info(
+          { event: "scheduler_owner_added", meeting_id: eventId, lead_email: prospectEmail, owner: current },
+          "lead was reassigned; added the new owner to the demo",
+        );
+        // Keep the in-memory event in step, so the reminder names them too.
+        item.event.attendees = [...(item.event.attendees ?? []), { email: current, displayName: owner.name }];
+      }
+      return added;
+    } catch (err) {
+      this.log.warn(
+        { event: "scheduler_owner_add_failed", meeting_id: eventId, owner: current, err: err instanceof Error ? err.message : String(err) },
+        "could not add the new owner to the demo",
+      );
+      return false;
+    }
   }
 
   /**

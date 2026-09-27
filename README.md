@@ -487,6 +487,18 @@ Deliberate limits:
   `REMINDER_GRACE_MINUTES`; a late reminder is worse than none.
 - Cancelled events and internal-only meetings are ignored.
 
+### Reassignment before the reminder
+
+Leads change hands - a demo booked while an SDR owned the lead may belong to
+an AE by the time it happens. Before each reminder the scheduler re-reads the
+lead's current owner and, if that person is not on the meeting yet, adds them
+to it and emails them the invitation. Nobody is ever removed: whoever was
+already told about the meeting keeps it. An owner lookup that fails is logged
+and ignored - it must never stop the reminder going out.
+
+The owner source is pluggable (`resolveOwner`); until a HubSpot token is
+configured the owner recorded when the demo was booked simply stands.
+
 ### Contact frequency
 
 Four triggers for one prospect is four chances to annoy them, so every call -

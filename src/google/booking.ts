@@ -216,6 +216,12 @@ export function computeFreeSlots(
   return slots;
 }
 
+export interface AttendeeAdded {
+  added: boolean;
+  /** Everyone on the event after the change. */
+  attendees: string[];
+}
+
 export class DemoBooker {
   constructor(
     private readonly checker: DemoBookingChecker,
@@ -276,6 +282,59 @@ export class DemoBooker {
       for (const b of cal.busy ?? []) busy.push({ start: Date.parse(b.start), end: Date.parse(b.end) });
     }
     return busy;
+  }
+
+  /**
+   * Adds `email` to an existing event as an attendee, if they are not on it
+   * already, and emails them the invitation. Used when a lead is reassigned
+   * after the demo was booked: the meeting stays where it is, the new owner
+   * simply gets added to it.
+   *
+   * Nobody is ever removed - a person who has already been told about a
+   * meeting should not have it silently disappear from their calendar.
+   */
+  async addAttendee(eventId: string, email: string, displayName?: string): Promise<AttendeeAdded> {
+    const who = email.trim().toLowerCase();
+    return this.withTimeout(async (signal) => {
+      const token = await this.checker.auth.getAccessToken(SCOPE_CALENDAR, signal);
+      const base = `${CALENDAR_API}/calendars/${encodeURIComponent(this.config.calendarId)}/events/${encodeURIComponent(eventId)}`;
+
+      const event = await googleJson<GoogleEvent>(
+        this.fetchImpl,
+        base,
+        { headers: { authorization: `Bearer ${token}` }, signal },
+        "events.get",
+        "attendee_update_failed",
+      );
+
+      const existing = event.attendees ?? [];
+      if (existing.some((a) => a.email?.trim().toLowerCase() === who)) {
+        return { added: false, attendees: existing.map((a) => a.email ?? "").filter(Boolean) };
+      }
+
+      const attendees = [...existing, { email: who, displayName }];
+      const updated = await googleJson<GoogleEvent>(
+        this.fetchImpl,
+        `${base}?sendUpdates=all`,
+        {
+          method: "PATCH",
+          headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+          body: JSON.stringify({ attendees }),
+          signal,
+        },
+        "events.patch",
+        "attendee_update_failed",
+      );
+
+      this.logger.info(
+        { event: "demo_attendee_added", event_id: eventId, calendar_id: this.config.calendarId, added: who },
+        "added attendee to existing demo",
+      );
+      return {
+        added: true,
+        attendees: (updated.attendees ?? attendees).map((a) => a.email ?? "").filter(Boolean),
+      };
+    });
   }
 
   /** Open demo slots on the shared calendar. Never falls back to "everything is free". */

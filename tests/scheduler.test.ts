@@ -6,6 +6,7 @@ import { CallService } from "../src/calls/service.js";
 import { parseEnv, type Env } from "../src/config/env.js";
 import { createDatabase, type Database } from "../src/db/client.js";
 import { CallRepository } from "../src/db/repository.js";
+import { DemoBooker } from "../src/google/booking.js";
 import { DemoBookingChecker, GoogleServiceAccountAuth, type FetchLike } from "../src/google/calendar.js";
 import type { AgentContextStrategy, PreparedAgent } from "../src/lyzr/contextStrategy.js";
 import type { CreateCallInput, TwilioCallClient } from "../src/twilio/client.js";
@@ -73,16 +74,38 @@ function demoEvent(overrides: Record<string, unknown> = {}) {
 let db: Database;
 let twilio: RecordingTwilio;
 
-async function harness(events: unknown[], env: Env = makeEnv()) {
+interface HarnessOptions {
+  env?: Env;
+  resolveOwner?: (leadEmail: string) => Promise<{ email: string; name?: string } | null>;
+}
+
+/** Records the PATCHes the scheduler makes to an event's attendee list. */
+const patched: { id: string; attendees: string[] }[] = [];
+
+async function harness(events: unknown[], opts: HarnessOptions | Env = {}) {
+  const { env = makeEnv(), resolveOwner } = ("NODE_ENV" in opts ? { env: opts as Env } : opts) as HarnessOptions;
+  patched.length = 0;
   db = createDatabase(undefined);
   await db.migrate();
   const repository = new CallRepository(db);
   twilio = new RecordingTwilio();
 
-  const fetchImpl: FetchLike = async (url) => {
+  const fetchImpl: FetchLike = async (url, init) => {
     const json = (b: unknown) => new Response(JSON.stringify(b), { status: 200, headers: { "content-type": "application/json" } });
     if (url.startsWith("https://oauth2.googleapis.com/token")) return json({ access_token: "tok", expires_in: 3600 });
     if (url.includes("/events?")) return json({ items: events });
+    // One event, by id: GET reads it, PATCH updates its attendees.
+    const match = url.match(/\/events\/([^?]+)/);
+    if (match) {
+      const id = decodeURIComponent(match[1]!);
+      const event = (events as { id?: string }[]).find((e) => e.id === id);
+      if (init?.method === "PATCH") {
+        const attendees = (JSON.parse(String(init.body)).attendees as { email: string }[]).map((a) => a.email);
+        patched.push({ id, attendees });
+        return json({ ...event, attendees: attendees.map((email) => ({ email })) });
+      }
+      return json(event ?? {});
+    }
     throw new Error(`unexpected ${url}`);
   };
 
@@ -91,9 +114,15 @@ async function harness(events: unknown[], env: Env = makeEnv()) {
     fetchImpl,
   );
   const checker = new DemoBookingChecker(auth, { calendarId: CAL, windowDays: 90, timeoutMs: 5000 }, silent, fetchImpl);
+  const booker = new DemoBooker(
+    checker,
+    { calendarId: CAL, timezone: "Asia/Kolkata", hoursStart: 10, hoursEnd: 18, workingDays: [1, 2, 3, 4, 5], slotMinutes: 30, minNoticeMinutes: 0, timeoutMs: 5000 },
+    silent,
+    fetchImpl,
+  );
   const service = new CallService({ env, repository, strategy: new StubStrategy(), twilio, logger: silent });
-  const scheduler = new CallScheduler({ env, repository, service, checker, logger: silent });
-  return { scheduler, repository, service, env };
+  const scheduler = new CallScheduler({ env, repository, service, checker, booker, resolveOwner, logger: silent });
+  return { scheduler, repository, service, env, booker };
 }
 
 let seedCount = 0;
@@ -257,5 +286,54 @@ describe("contact-frequency cap", () => {
       ae_email: null, ae_name: null,
     } as unknown as Lead;
     await expect(service.placeCall(lead, null)).resolves.toMatchObject({ replayed: false });
+  });
+});
+
+describe("owner reassignment before a reminder", () => {
+  const NEW_OWNER = "priya.sharma@lyzr.ai";
+
+  it("adds the newly assigned owner to the existing demo", async () => {
+    const { scheduler, repository } = await harness([demoEvent()], {
+      resolveOwner: async () => ({ email: NEW_OWNER, name: "Priya Sharma" }),
+    });
+    await seedPriorCall(repository);
+
+    const result = await scheduler.sweep();
+    expect(result.ownersAdded).toBe(1);
+    expect(patched).toHaveLength(1);
+    // Nobody is removed - the previous owner keeps the meeting.
+    expect(patched[0]!.attendees).toEqual([CAL, AE, LEAD, NEW_OWNER]);
+    expect(result.remindersPlaced).toBe(1);
+  });
+
+  it("leaves the event alone when the owner is already on it", async () => {
+    const { scheduler, repository } = await harness([demoEvent()], {
+      resolveOwner: async () => ({ email: AE, name: "Bhavana Bolgam" }),
+    });
+    await seedPriorCall(repository);
+    const result = await scheduler.sweep();
+    expect(result.ownersAdded).toBe(0);
+    expect(patched).toHaveLength(0);
+    expect(result.remindersPlaced).toBe(1);
+  });
+
+  it("still reminds when the owner lookup fails", async () => {
+    const { scheduler, repository } = await harness([demoEvent()], {
+      resolveOwner: async () => { throw new Error("hubspot down"); },
+    });
+    await seedPriorCall(repository);
+    const result = await scheduler.sweep();
+    expect(result.ownersAdded).toBe(0);
+    expect(result.remindersPlaced).toBe(1);
+    expect(twilio.calls).toHaveLength(1);
+  });
+
+  it("does nothing when no owner resolver is configured", async () => {
+    const { scheduler, repository } = await harness([demoEvent()]);
+    await seedPriorCall(repository);
+    const result = await scheduler.sweep();
+    expect(result.ownersAdded).toBe(0);
+    expect(patched).toHaveLength(0);
+    expect(result.remindersPlaced).toBe(1);
   });
 });
