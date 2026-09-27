@@ -22,7 +22,7 @@ async function main(): Promise<void> {
   setLogger(logger);
 
   const built = await buildApp({ env, logger });
-  const { app, db, service, repository, lyzr, cleanup } = built;
+  const { app, db, service, repository, lyzr, cleanup, scheduler } = built;
 
   // HTTP and WebSocket share one server, on one Railway port.
   const wss = new WebSocketServer({ noServer: true });
@@ -45,7 +45,11 @@ async function main(): Promise<void> {
   });
 
   // Sweep abandoned agent clones hourly; no-op in mock mode.
-  if (!env.MOCK_EXTERNAL_SERVICES) cleanup.start();
+  if (!env.MOCK_EXTERNAL_SERVICES) {
+    cleanup.start();
+    // Reminder and reschedule calls, driven off the shared demo calendar.
+    scheduler?.start();
+  }
 
   await app.listen({ host: "0.0.0.0", port: env.PORT });
   logger.info(
@@ -61,6 +65,7 @@ async function main(): Promise<void> {
 
     // Close live conversations before the HTTP server, so bridges tear down.
     cleanup.stop();
+    scheduler?.stop();
     for (const client of wss.clients) client.close(1001, "server shutting down");
     wss.close();
 

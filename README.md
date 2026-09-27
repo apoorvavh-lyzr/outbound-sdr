@@ -457,6 +457,44 @@ calendar with `502 calendar_check_failed`). That fits a flow that must never
 call booked leads; with the confirmation-call flow above it would block the
 confirmation branch, so leave it **off** there.
 
+## Q1. Calls nobody submits a form for
+
+Two of the four call modes are placed by the service itself, from the demo
+calendar rather than from SuperFlow:
+
+| Mode | When | Trigger |
+|---|---|---|
+| `booking` | No slot picked yet | SuperFlow, on form submission |
+| `confirmation` | A slot exists; acknowledge it and gather context | SuperFlow, on form submission |
+| `reminder` | `REMINDER_LEAD_MINUTES` before the demo starts | Scheduler |
+| `reschedule` | The prospect declined the invitation | Scheduler |
+
+`ENABLE_CALL_SCHEDULER=true` starts a sweep every
+`SCHEDULER_INTERVAL_SECONDS`. Each sweep reads upcoming events on
+`demos@lyzr.ai`, finds the prospect attendee (the one not on the Lyzr domain)
+and decides per event. Everything it places goes through the normal
+`CallService`, so the state machine, idempotency and the contact-frequency cap
+all apply unchanged.
+
+Deliberate limits:
+
+- A prospect is only called if we already hold a phone number for them from an
+  earlier call. The calendar has an email address, never a number.
+- One reminder and one reschedule call per meeting, ever - deduplicated on
+  `(meeting_id, call_mode)` in the database and by an idempotency key, so a
+  restart mid-sweep cannot double-dial.
+- A reminder is skipped if the demo is already within
+  `REMINDER_GRACE_MINUTES`; a late reminder is worse than none.
+- Cancelled events and internal-only meetings are ignored.
+
+### Contact frequency
+
+Four triggers for one prospect is four chances to annoy them, so every call -
+whoever asked for it - passes a cap first: at most `MAX_CALLS_PER_LEAD` calls
+in `CALL_FREQUENCY_WINDOW_DAYS`, and automated follow-ups additionally need
+`MIN_HOURS_BETWEEN_CALLS` since the last call. A refusal is a `409`, and the
+scheduler treats that as a normal outcome rather than an error.
+
 ## Q. Transcript + summary workflow
 
 Recommended (keeps CRM/email logic in SuperFlow):

@@ -6,7 +6,7 @@ import type { AgentContextStrategy } from "../lyzr/contextStrategy.js";
 import type { TwilioCallClient } from "../twilio/client.js";
 import { buildStreamTwiML } from "../twilio/twiml.js";
 import { signStreamToken } from "../twilio/validation.js";
-import { AppError, PreflightError, toAppError } from "../utils/errors.js";
+import { AppError, ConflictError, PreflightError, toAppError } from "../utils/errors.js";
 import { maskEmail, maskPhone } from "../utils/logging.js";
 import { resolveTransition } from "./stateMachine.js";
 import { isTerminal, type CallRecord, type CallStatus, type Lead } from "./types.js";
@@ -64,6 +64,8 @@ export class CallService {
       }
     }
 
+    await this.enforceContactFrequency(lead);
+
     if (env.ENABLE_DNC_CHECK && this.deps.suppressionCheck) {
       const reason = await this.deps.suppressionCheck(lead);
       if (reason) {
@@ -112,6 +114,38 @@ export class CallService {
       log.error({ event: "call_failed", code: appError.code }, appError.message);
       this.deps.onTerminal?.(failed);
       throw appError;
+    }
+  }
+
+  /**
+   * Refuses a call that would over-contact the prospect: too many calls in the
+   * window, or too soon after the last one. Booking and confirmation calls are
+   * the first contact for a lead, so only the automated follow-ups (reminder,
+   * reschedule) are held to the minimum-gap rule; the total cap applies to all.
+   */
+  private async enforceContactFrequency(lead: Lead): Promise<void> {
+    const { env, repository } = this.deps;
+    if (env.MAX_CALLS_PER_LEAD === 0) return;
+
+    const windowStart = new Date(Date.now() - env.CALL_FREQUENCY_WINDOW_DAYS * 86_400_000).toISOString();
+    const recent = await repository.countRecentCallsTo(lead.email, windowStart);
+    if (recent >= env.MAX_CALLS_PER_LEAD) {
+      throw new ConflictError(
+        `Contact limit reached: ${recent} calls to this lead in the last ${env.CALL_FREQUENCY_WINDOW_DAYS} days`,
+      );
+    }
+
+    if (env.MIN_HOURS_BETWEEN_CALLS > 0 && (lead.call_mode === "reminder" || lead.call_mode === "reschedule")) {
+      const last = await repository.findLatestByEmail(lead.email);
+      if (last) {
+        const gapMs = Date.now() - Date.parse(last.created_at);
+        const minMs = env.MIN_HOURS_BETWEEN_CALLS * 3_600_000;
+        if (Number.isFinite(gapMs) && gapMs < minMs) {
+          throw new ConflictError(
+            `Last call to this lead was ${Math.round(gapMs / 60_000)} minutes ago; minimum gap is ${env.MIN_HOURS_BETWEEN_CALLS}h`,
+          );
+        }
+      }
     }
   }
 

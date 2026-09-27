@@ -1,6 +1,13 @@
 import { z } from "zod";
 
-export const CALL_MODES = ["booking", "confirmation"] as const;
+/**
+ * Why we are phoning:
+ *  booking      - they asked for a demo but have not picked a slot
+ *  confirmation - a slot exists; acknowledge it and gather context
+ *  reminder     - shortly before the demo, so they do not forget it
+ *  reschedule   - they declined the invite or did not show up
+ */
+export const CALL_MODES = ["booking", "confirmation", "reminder", "reschedule"] as const;
 export type CallMode = (typeof CALL_MODES)[number];
 
 export const CALL_STATUSES = [
@@ -56,7 +63,7 @@ export const leadSchema = z
     phone: e164,
     email: z.string().trim().toLowerCase().email("email must be a valid address"),
     call_mode: z.enum(CALL_MODES, {
-      errorMap: () => ({ message: "call_mode must be 'booking' or 'confirmation'" }),
+      errorMap: () => ({ message: `call_mode must be one of: ${CALL_MODES.join(", ")}` }),
     }),
 
     first_name: optionalText("there"),
@@ -77,18 +84,19 @@ export const leadSchema = z
     ae_name: emptyToNull,
   })
   .superRefine((lead, ctx) => {
-    if (lead.call_mode === "confirmation" && !lead.meeting_booked) {
+    const needsMeeting = lead.call_mode === "confirmation" || lead.call_mode === "reminder";
+    if (needsMeeting && !lead.meeting_booked) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ["meeting_booked"],
-        message: "meeting_booked must be true when call_mode is 'confirmation'",
+        message: `meeting_booked must be true when call_mode is '${lead.call_mode}'`,
       });
     }
-    if (lead.call_mode === "confirmation" && !lead.meeting_start) {
+    if (needsMeeting && !lead.meeting_start) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ["meeting_start"],
-        message: "meeting_start is required when call_mode is 'confirmation'",
+        message: `meeting_start is required when call_mode is '${lead.call_mode}'`,
       });
     }
   })

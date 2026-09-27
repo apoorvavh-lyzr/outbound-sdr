@@ -114,10 +114,10 @@ describe("E.164 validation", () => {
 
 describe("call_mode validation", () => {
   it("rejects an unknown mode", () => {
-    const result = leadSchema.safeParse({ ...bookingPayload, call_mode: "reschedule" });
+    const result = leadSchema.safeParse({ ...bookingPayload, call_mode: "carrier_pigeon" });
     expect(result.success).toBe(false);
     if (!result.success) {
-      expect(result.error.issues[0]?.message).toMatch(/booking.*confirmation/);
+      expect(result.error.issues[0]?.message).toMatch(/booking.*confirmation.*reminder.*reschedule/);
     }
   });
 

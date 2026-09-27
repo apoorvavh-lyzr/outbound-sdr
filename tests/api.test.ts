@@ -205,7 +205,7 @@ describe("POST /api/call - validation and auth", () => {
   });
 
   it("returns 400 for an invalid call_mode", async () => {
-    expect((await post({ ...bookingBody, call_mode: "reschedule" })).statusCode).toBe(400);
+    expect((await post({ ...bookingBody, call_mode: "carrier_pigeon" })).statusCode).toBe(400);
   });
 
   it("returns 401 without a bearer token", async () => {

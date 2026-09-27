@@ -6,6 +6,7 @@ import type { Logger } from "pino";
 import { csvList, googleCalendarConfigured, requiredAgentTools, type Env } from "./config/env.js";
 import { createDatabase, type Database } from "./db/client.js";
 import { CallRepository } from "./db/repository.js";
+import { CallScheduler } from "./calls/scheduler.js";
 import { CallService } from "./calls/service.js";
 import { LyzrClient } from "./lyzr/client.js";
 import { ClonedAgentCleanup } from "./lyzr/cleanup.js";
@@ -26,6 +27,7 @@ import { AppError, ConflictError, ValidationError, toAppError } from "./utils/er
 import { getLogger } from "./utils/logging.js";
 
 export interface BuiltApp {
+  scheduler: CallScheduler | undefined;
   app: FastifyInstance;
   db: Database;
   repository: CallRepository;
@@ -165,7 +167,17 @@ export async function buildApp(options: BuildAppOptions): Promise<BuiltApp> {
   registerBookingRoutes(app, { env, booker: demoChecker ? createDemoBooker(env, demoChecker, logger) : undefined });
   registerTwilioStatusRoute(app, env, service);
 
-  return { app, db, repository, service, lyzr, cleanup, env, logger };
+  const scheduler = demoChecker
+    ? new CallScheduler({ env, repository, service, checker: demoChecker, logger })
+    : undefined;
+  if (env.ENABLE_CALL_SCHEDULER && !scheduler) {
+    logger.warn(
+      { event: "scheduler_unconfigured" },
+      "ENABLE_CALL_SCHEDULER is set but the GOOGLE_* variables are missing; no reminder calls will be placed",
+    );
+  }
+
+  return { app, db, repository, service, lyzr, cleanup, scheduler, env, logger };
 }
 
 function createDemoChecker(env: Env, logger: Logger): DemoBookingChecker | undefined {

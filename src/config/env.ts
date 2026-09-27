@@ -68,6 +68,31 @@ export const envSchema = z
     ENABLE_DNC_CHECK: bool.optional().default(false),
 
     /**
+     * Contact-frequency cap. Several triggers can fire for one prospect -
+     * booking, confirmation, reminder, reschedule - and a lead must not be
+     * phoned repeatedly because of it. Counted per email address.
+     * 0 disables the cap.
+     */
+    MAX_CALLS_PER_LEAD: int(3, 0),
+    CALL_FREQUENCY_WINDOW_DAYS: int(14, 1),
+    /** Minimum gap between two calls to the same prospect. */
+    MIN_HOURS_BETWEEN_CALLS: int(4, 0),
+
+    /**
+     * Scheduler: reminder calls before a demo, and reschedule calls when the
+     * prospect declines. Reads the demo calendar on a timer.
+     */
+    ENABLE_CALL_SCHEDULER: bool.optional().default(false),
+    /** How long before the demo the reminder call goes out. */
+    REMINDER_LEAD_MINUTES: int(45, 5),
+    /** A reminder is skipped entirely if we are already this late. */
+    REMINDER_GRACE_MINUTES: int(15, 1),
+    /** How often the scheduler sweeps the calendar. */
+    SCHEDULER_INTERVAL_SECONDS: int(120, 30),
+    /** Call the prospect when they decline the invitation. */
+    ENABLE_DECLINE_CALLS: bool.optional().default(true),
+
+    /**
      * Google Workspace service account with Domain-Wide Delegation, used by
      * POST /check-demo-booking to read the shared demo calendar. All four are
      * required together; none is boot-blocking - the calling service must

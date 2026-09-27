@@ -158,6 +158,37 @@ export class CallRepository {
     return rows[0] ? hydrate(rows[0]) : null;
   }
 
+  /**
+   * How many calls we have placed to this lead since `sinceIso`, whatever the
+   * outcome. Used by the contact-frequency cap: a prospect must not be phoned
+   * repeatedly just because several triggers fired for them.
+   */
+  async countRecentCallsTo(email: string, sinceIso: string): Promise<number> {
+    const rows = await this.db.query<{ n: number | string }>(
+      "SELECT COUNT(*) AS n FROM calls WHERE email = ? AND created_at >= ? AND status <> ?",
+      [email.trim().toLowerCase(), sinceIso, "failed"],
+    );
+    return Number(rows[0]?.n ?? 0);
+  }
+
+  /** The most recent call to this lead, if any. */
+  async findLatestByEmail(email: string): Promise<CallRecord | null> {
+    const rows = await this.db.query(
+      "SELECT * FROM calls WHERE email = ? ORDER BY created_at DESC LIMIT 1",
+      [email.trim().toLowerCase()],
+    );
+    return rows[0] ? hydrate(rows[0]) : null;
+  }
+
+  /** Calls already placed for a given meeting in a given mode - the dedupe key for scheduled calls. */
+  async findByMeetingAndMode(meetingId: string, mode: string): Promise<CallRecord[]> {
+    const rows = await this.db.query(
+      "SELECT * FROM calls WHERE meeting_id = ? AND call_mode = ? ORDER BY created_at DESC",
+      [meetingId, mode],
+    );
+    return rows.map(hydrate);
+  }
+
   async findByTwilioCallSid(sid: string): Promise<CallRecord | null> {
     const rows = await this.db.query(
       "SELECT * FROM calls WHERE twilio_call_sid = ? ORDER BY created_at DESC LIMIT 1",
