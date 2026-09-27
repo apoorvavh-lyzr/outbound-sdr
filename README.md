@@ -348,6 +348,18 @@ that reason, but "is true" is still the clearer choice.
 **5. Code 1 / Code 2 / both HTTP Request nodes stay exactly as they are** —
 the field names above are the ones sections O and P already consume.
 
+### Where the owner comes from
+
+`HUBSPOT_ACCESS_TOKEN` lets the service find the owner itself: contact search
+by email, then the owner record, cached for five minutes. So SuperFlow does
+not have to pass `ae_email` at all - it still may, and an explicit value wins.
+
+Assignment is asynchronous (the lead-scoring service answers `queued: true`
+and assigns moments later), so the lookup polls for up to
+`HUBSPOT_OWNER_WAIT_MS` before proceeding without an owner. An unassigned
+lead is a normal answer, not an error: the check then covers `demos@lyzr.ai`
+alone.
+
 ### Routing to the assigned AE
 
 The lead-scoring endpoint (`/api/hubspot/enrich-and-assign`) returns the

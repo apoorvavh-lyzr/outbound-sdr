@@ -24,6 +24,8 @@ export interface DemoCheckRoutesDeps {
   env: Env;
   /** Undefined when the Google variables are not configured. */
   checker: DemoBookingChecker | undefined;
+  /** Resolves the assigned owner when the caller does not supply one. */
+  resolveOwner?: (leadEmail: string) => Promise<{ email: string; name?: string } | null>;
 }
 
 /**
@@ -36,7 +38,7 @@ export interface DemoCheckRoutesDeps {
  * The IF node must branch on `already_booked == false`, never `!= true`.
  */
 export function registerDemoCheckRoutes(app: FastifyInstance, deps: DemoCheckRoutesDeps): void {
-  const { env, checker } = deps;
+  const { env, checker, resolveOwner } = deps;
 
   const fail = (reply: FastifyReply, err: AppError, leadEmail: string | null) =>
     reply.status(err.statusCode).send({
@@ -77,13 +79,21 @@ export function registerDemoCheckRoutes(app: FastifyInstance, deps: DemoCheckRou
       );
     }
 
+    // SuperFlow need not know who owns the lead: when it does not say, we ask
+    // HubSpot. Assignment is asynchronous, so this may legitimately be nobody.
+    let ae = ae_email;
+    if (!ae && resolveOwner) {
+      const owner = await resolveOwner(lead_email).catch(() => null);
+      if (owner?.email.endsWith(`@${impersonationDomain(env)}`)) ae = owner.email;
+    }
+
     try {
-      const result = await checker.check(lead_email, ae_email);
+      const result = await checker.check(lead_email, ae);
       return reply.status(200).send({
         success: true,
         already_booked: result.alreadyBooked,
         lead_email,
-        ae_email: ae_email ?? null,
+        ae_email: ae ?? null,
         calendar_id: checker.calendarId,
         calendars_checked: result.calendarsChecked,
         event: result.event,

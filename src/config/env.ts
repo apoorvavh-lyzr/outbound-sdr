@@ -93,6 +93,22 @@ export const envSchema = z
     ENABLE_DECLINE_CALLS: bool.optional().default(true),
 
     /**
+     * HubSpot private-app token. Lets the service resolve who owns a lead (so
+     * their calendar is honoured) and write the call back onto the contact.
+     * Absent, both features are simply off - the service still runs.
+     */
+    HUBSPOT_ACCESS_TOKEN: optionalStr,
+    HUBSPOT_TIMEOUT_MS: int(10000, 1000),
+    /**
+     * Assignment is asynchronous, so a lead created seconds ago may not have
+     * an owner yet. How long a calendar check waits for one before proceeding
+     * without it. 0 disables waiting.
+     */
+    HUBSPOT_OWNER_WAIT_MS: int(8000, 0),
+    /** Write the call activity and transcript summary back to the contact. */
+    ENABLE_HUBSPOT_WRITEBACK: bool.optional().default(false),
+
+    /**
      * Google Workspace service account with Domain-Wide Delegation, used by
      * POST /check-demo-booking to read the shared demo calendar. All four are
      * required together; none is boot-blocking - the calling service must
@@ -260,6 +276,10 @@ export type Env = z.infer<typeof envSchema>;
 /** True when the Google service-account variables needed for the demo check are present. */
 export function googleCalendarConfigured(env: Env): boolean {
   return Boolean(env.GOOGLE_SERVICE_ACCOUNT_EMAIL && env.GOOGLE_PRIVATE_KEY);
+}
+
+export function hubspotConfigured(env: Env): boolean {
+  return Boolean(env.HUBSPOT_ACCESS_TOKEN);
 }
 
 export function csvList(value: string | undefined): string[] {

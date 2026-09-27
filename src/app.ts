@@ -3,7 +3,7 @@ import formbody from "@fastify/formbody";
 import helmet from "@fastify/helmet";
 import rateLimit from "@fastify/rate-limit";
 import type { Logger } from "pino";
-import { csvList, googleCalendarConfigured, requiredAgentTools, type Env } from "./config/env.js";
+import { csvList, googleCalendarConfigured, hubspotConfigured, requiredAgentTools, type Env } from "./config/env.js";
 import { createDatabase, type Database } from "./db/client.js";
 import { CallRepository } from "./db/repository.js";
 import { CallScheduler } from "./calls/scheduler.js";
@@ -16,6 +16,7 @@ import { createTranscriptProvider } from "./lyzr/transcriptProvider.js";
 import { MockTwilioClient, RealTwilioClient, type TwilioCallClient } from "./twilio/client.js";
 import { SuperflowCallback } from "./callback/superflow.js";
 import { DemoBooker } from "./google/booking.js";
+import { HubspotClient } from "./hubspot/client.js";
 import { DemoBookingChecker, GoogleServiceAccountAuth } from "./google/calendar.js";
 import { registerBookingRoutes } from "./routes/booking.js";
 import { registerCallRoutes } from "./routes/calls.js";
@@ -28,6 +29,7 @@ import { getLogger } from "./utils/logging.js";
 
 export interface BuiltApp {
   scheduler: CallScheduler | undefined;
+  hubspot: HubspotClient | undefined;
   app: FastifyInstance;
   db: Database;
   repository: CallRepository;
@@ -46,6 +48,7 @@ export interface BuildAppOptions {
   strategy?: AgentContextStrategy;
   logger?: Logger;
   demoChecker?: DemoBookingChecker;
+  hubspot?: HubspotClient;
 }
 
 export async function buildApp(options: BuildAppOptions): Promise<BuiltApp> {
@@ -83,6 +86,16 @@ export async function buildApp(options: BuildAppOptions): Promise<BuiltApp> {
   const callback = new SuperflowCallback(env, repository, logger);
 
   const demoChecker = options.demoChecker ?? createDemoChecker(env, logger);
+
+  const hubspot = options.hubspot ?? createHubspotClient(env, logger);
+  /**
+   * Who owns this lead right now. Waits briefly, because assignment happens
+   * asynchronously after the form is submitted, and returns null rather than
+   * failing when the lead simply has no owner yet.
+   */
+  const resolveOwner = hubspot
+    ? (leadEmail: string) => hubspot.waitForOwner(leadEmail, env.HUBSPOT_OWNER_WAIT_MS)
+    : undefined;
 
   const service = new CallService({
     env,
@@ -163,7 +176,7 @@ export async function buildApp(options: BuildAppOptions): Promise<BuiltApp> {
   registerHealthRoutes(app, env, db);
   registerLeadRoutes(app, { env });
   registerCallRoutes(app, { env, service, transcripts: createTranscriptProvider(env) });
-  registerDemoCheckRoutes(app, { env, checker: demoChecker });
+  registerDemoCheckRoutes(app, { env, checker: demoChecker, resolveOwner });
   const demoBooker = demoChecker ? createDemoBooker(env, demoChecker, logger) : undefined;
   registerBookingRoutes(app, { env, booker: demoBooker });
   registerTwilioStatusRoute(app, env, service);
@@ -175,8 +188,7 @@ export async function buildApp(options: BuildAppOptions): Promise<BuiltApp> {
         service,
         checker: demoChecker,
         booker: demoBooker,
-        // resolveOwner is supplied once a HubSpot token is configured; without
-        // it the owner recorded at booking time simply stands.
+        resolveOwner,
         logger,
       })
     : undefined;
@@ -187,7 +199,7 @@ export async function buildApp(options: BuildAppOptions): Promise<BuiltApp> {
     );
   }
 
-  return { app, db, repository, service, lyzr, cleanup, scheduler, env, logger };
+  return { app, db, repository, service, lyzr, cleanup, scheduler, hubspot, env, logger };
 }
 
 function createDemoChecker(env: Env, logger: Logger): DemoBookingChecker | undefined {
@@ -228,6 +240,20 @@ function createDemoBooker(env: Env, checker: DemoBookingChecker, logger: Logger)
       minNoticeMinutes: env.DEMO_MIN_NOTICE_MINUTES,
       timeoutMs: env.DEMO_CHECK_TIMEOUT_MS,
     },
+    logger,
+  );
+}
+
+function createHubspotClient(env: Env, logger: Logger): HubspotClient | undefined {
+  if (!hubspotConfigured(env)) {
+    logger.info(
+      { event: "hubspot_unconfigured" },
+      "HUBSPOT_ACCESS_TOKEN is not set - owner lookup and call write-back are disabled",
+    );
+    return undefined;
+  }
+  return new HubspotClient(
+    { accessToken: env.HUBSPOT_ACCESS_TOKEN!, timeoutMs: env.HUBSPOT_TIMEOUT_MS },
     logger,
   );
 }
